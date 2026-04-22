@@ -1,0 +1,8 @@
+{
+  "_comment": "Cinematic preset — high fidelity, ngons allowed, large budget",
+  "geometry": {
+    "max_triangles": 500000,
+    "allow_ngons": true,
+    "check_uvs": true
+  }
+}

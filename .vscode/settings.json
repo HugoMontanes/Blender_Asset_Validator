@@ -1,0 +1,12 @@
+{
+    "python.analysis.typeCheckingMode": "standard",
+    "python.analysis.extraPaths": [
+        "./blender_asset_validator"
+    ],
+    "blender.addon.sourceDir": "./blender_asset_validator",
+    "blender.addon.reloadOnSave": true,
+    "[python]": {
+        "editor.defaultFormatter": "ms-python.black-formatter",
+        "editor.formatOnSave": true
+    }
+}

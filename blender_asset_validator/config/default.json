@@ -1,0 +1,43 @@
+{
+  "naming": {
+    "pattern": "^[A-Z][a-zA-Z0-9_]+$",
+    "description": "PascalCase — starts with uppercase, letters/numbers/underscores only"
+  },
+  "geometry": {
+    "max_triangles": 50000,
+    "allow_ngons": false,
+    "check_uvs": true
+  },
+  "transforms": {
+    "check_location": true,
+    "check_rotation": true,
+    "check_scale": true,
+    "location_threshold": 0.001,
+    "rotation_threshold": 0.001,
+    "scale_threshold": 0.001
+  },
+  "materials": {
+    "require_material": true,
+    "check_textures": true
+  },
+  "export": {
+    "path": "//exports/",
+    "axis_forward": "-Z",
+    "axis_up": "Y",
+    "apply_unit_scale": true,
+    "apply_scale_options": "FBX_SCALE_NONE",
+    "bake_space_transform": false,
+    "use_selection": true,
+    "use_active_collection": false,
+    "global_scale": 1.0,
+    "use_mesh_modifiers": true,
+    "mesh_smooth_type": "OFF",
+    "use_tspace": false,
+    "use_armature_deform_only": false,
+    "add_leaf_bones": false,
+    "primary_bone_axis": "Y",
+    "secondary_bone_axis": "X",
+    "armature_nodetype": "NULL",
+    "path_mode": "AUTO"
+  }
+}

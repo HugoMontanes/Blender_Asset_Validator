@@ -1,0 +1,12 @@
+{
+  "_comment": "Mobile preset — tight polycount budget, no ngons tolerated",
+  "geometry": {
+    "max_triangles": 5000,
+    "allow_ngons": false,
+    "check_uvs": true
+  },
+  "naming": {
+    "pattern": "^[A-Z][a-zA-Z0-9_]+$",
+    "description": "PascalCase"
+  }
+}
