@@ -36,8 +36,8 @@ class ASSET_VALIDATOR_OT_export_fbx(bpy.types.Operator):
         export_dir = bpy.path.abspath(export_cfg.get("path", "//exports/"))
         os.makedirs(export_dir, exist_ok=True)
 
-        blend_name = Path(bpy.data.filepath).stem or "untitled"
-        fbx_path = os.path.join(export_dir, f"{blend_name}.fbx")
+        export_name = _get_export_name(context, export_cfg, validation_objects)
+        fbx_path = os.path.join(export_dir, f"{export_name}.fbx")
 
         bpy.ops.export_scene.fbx(
             filepath=fbx_path,
@@ -72,3 +72,33 @@ def _get_validation_objects(context, export_cfg):
         return [obj for obj in collection.all_objects if obj.type == "MESH"]
 
     return [obj for obj in context.scene.objects if obj.type == "MESH"]
+
+
+def _get_export_name(context, export_cfg, validation_objects):
+    if export_cfg.get("use_selection", True):
+        if len(validation_objects) == 1:
+            return _sanitize_export_name(validation_objects[0].name)
+
+        active_object = context.active_object
+        if active_object and active_object.type == "MESH" and active_object in validation_objects:
+            return _sanitize_export_name(active_object.name)
+
+    if export_cfg.get("use_active_collection", False):
+        collection = context.view_layer.active_layer_collection.collection
+        if collection:
+            return _sanitize_export_name(collection.name)
+
+    blend_name = Path(bpy.data.filepath).stem
+    if blend_name:
+        return _sanitize_export_name(blend_name)
+
+    if validation_objects:
+        return _sanitize_export_name(validation_objects[0].name)
+
+    return "untitled"
+
+
+def _sanitize_export_name(name):
+    invalid_chars = '<>:"/\\|?*'
+    sanitized = "".join("_" if char in invalid_chars else char for char in name).strip()
+    return sanitized or "untitled"
