@@ -31,6 +31,7 @@
     "bake_space_transform": false,
     "use_selection": true,
     "use_active_collection": false,
+    "individual_files": true,
     "global_scale": 1.0,
     "use_mesh_modifiers": true,
     "mesh_smooth_type": "OFF",

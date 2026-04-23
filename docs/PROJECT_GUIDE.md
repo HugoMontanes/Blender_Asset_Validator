@@ -223,6 +223,13 @@ This operator:
 
 A useful improvement in the current project is that export validation now follows export scope more closely. For example, if export is configured to use selected objects, the validator now checks the selected mesh objects instead of unrelated meshes elsewhere in the scene.
 
+Another important behavior is naming and file splitting:
+
+- when `individual_files` is enabled, each mesh asset is exported as its own FBX file
+- each exported file uses the Blender object name
+- invalid filename characters are sanitized so exports still succeed on Windows
+- the addon temporarily changes selection during export, then restores the user's original selection
+
 ## 11. Why `core/state.py` exists
 
 Blender UI panels do not automatically "remember" the output of a previous operator run.
@@ -260,6 +267,20 @@ That means most thresholds and behaviors live in JSON:
 - transform thresholds
 - material requirements
 - FBX export settings
+
+Some especially useful export settings are:
+
+- `path`
+  The output folder for exported FBX files.
+
+- `use_selection`
+  Export only the currently selected mesh objects.
+
+- `use_active_collection`
+  Export mesh objects from the active collection.
+
+- `individual_files`
+  Export one FBX per mesh asset instead of one combined FBX.
 
 This is a strong design choice because different projects can have different needs without rewriting Python code.
 
@@ -299,6 +320,9 @@ The review highlighted a few practical issues worth understanding:
 
 - Export validation scope
   Validation should match what will be exported. Otherwise unrelated scene assets can incorrectly block export.
+
+- Export naming
+  Using the `.blend` file name alone is not ideal for asset exports. The exporter now names files from the Blender object name so the output matches the artist's selected asset.
 
 - Texture path verification
   A texture node may still contain a filepath string even when the file is gone on disk. The material check now verifies the resolved file path more carefully.
