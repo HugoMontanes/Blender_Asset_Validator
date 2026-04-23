@@ -5,7 +5,7 @@ import bpy
 
 from ..core.engine import load_config, run_validation
 from ..core.result import Severity
-from ..core.state import get_results, set_results
+from ..core.state import set_results
 from ..report.generator import generate_report
 
 
@@ -16,9 +16,15 @@ class ASSET_VALIDATOR_OT_export_fbx(bpy.types.Operator):
 
     def execute(self, context):
         config = load_config()
+        export_cfg = config.get("export", {})
+        validation_objects = _get_validation_objects(context, export_cfg)
+
+        if export_cfg.get("use_selection", True) and not validation_objects:
+            self.report({"ERROR"}, "Export blocked: no mesh objects are selected")
+            return {"CANCELLED"}
 
         # Always re-validate before export so stale results can't be bypassed
-        results = run_validation(config)
+        results = run_validation(config, objects=validation_objects)
         set_results(results)
         generate_report(results)
 
@@ -27,7 +33,6 @@ class ASSET_VALIDATOR_OT_export_fbx(bpy.types.Operator):
             self.report({"ERROR"}, f"Export blocked — {len(errors)} error(s) must be fixed first")
             return {"CANCELLED"}
 
-        export_cfg = config.get("export", {})
         export_dir = bpy.path.abspath(export_cfg.get("path", "//exports/"))
         os.makedirs(export_dir, exist_ok=True)
 
@@ -56,3 +61,14 @@ class ASSET_VALIDATOR_OT_export_fbx(bpy.types.Operator):
 
         self.report({"INFO"}, f"Exported → {fbx_path}")
         return {"FINISHED"}
+
+
+def _get_validation_objects(context, export_cfg):
+    if export_cfg.get("use_selection", True):
+        return [obj for obj in context.selected_objects if obj.type == "MESH"]
+
+    if export_cfg.get("use_active_collection", False):
+        collection = context.view_layer.active_layer_collection.collection
+        return [obj for obj in collection.all_objects if obj.type == "MESH"]
+
+    return [obj for obj in context.scene.objects if obj.type == "MESH"]

@@ -18,6 +18,7 @@ Runs a set of checks on every mesh object in the scene and reports errors and wa
 | **Polycount** | Triangle count over the configured budget (default: 50 000) |
 | **Ngons** | Faces with more than 4 vertices |
 | **UVs** | Missing UV maps, overlapping UV islands |
+| **Geometry cleanup** | Degenerate / zero-area faces that should be fixed before export |
 | **Materials** | Empty material slots, Image Texture nodes with no image or missing file |
 
 Each failed check shows the offending object, a description of the problem, and a fix hint.
@@ -58,7 +59,9 @@ Rules are driven by `config/default.json`. Edit it directly or drop a preset int
   "geometry": {
     "max_triangles": 50000,
     "allow_ngons": false,
-    "check_uvs": true
+    "check_uvs": true,
+    "check_degenerate_faces": true,
+    "degenerate_face_area_epsilon": 1e-10
   },
   "transforms": {
     "check_location": true,

@@ -1,4 +1,4 @@
-from typing import List, Set, Tuple
+from typing import List, Tuple
 
 import bpy
 import bmesh
@@ -89,6 +89,29 @@ def check_uvs(objects: List[bpy.types.Object], config: dict) -> List[CheckResult
                 object_name=obj.name,
                 fix_hint="UV Editor > UV > Pack Islands or manually fix overlaps",
                 check_name="uvs",
+            ))
+
+    return results
+
+
+@register_check
+def check_degenerate_faces(objects: List[bpy.types.Object], config: dict) -> List[CheckResult]:
+    results = []
+    cfg = config.get("geometry", {})
+    if not cfg.get("check_degenerate_faces", True):
+        return results
+
+    area_epsilon = cfg.get("degenerate_face_area_epsilon", 1e-10)
+
+    for obj in objects:
+        degenerate_faces = sum(1 for poly in obj.data.polygons if poly.area <= area_epsilon)
+        if degenerate_faces:
+            results.append(CheckResult(
+                severity=Severity.ERROR,
+                message=f"'{obj.name}' has {degenerate_faces} degenerate face(s)",
+                object_name=obj.name,
+                fix_hint="Delete zero-area faces or merge overlapping vertices before export",
+                check_name="geometry_cleanup",
             ))
 
     return results

@@ -6,7 +6,9 @@
   "geometry": {
     "max_triangles": 50000,
     "allow_ngons": false,
-    "check_uvs": true
+    "check_uvs": true,
+    "check_degenerate_faces": true,
+    "degenerate_face_area_epsilon": 1e-10
   },
   "transforms": {
     "check_location": true,
@@ -22,7 +24,7 @@
   },
   "export": {
     "path": "//exports/",
-    "axis_forward": "-Z",
+    "axis_forward": "X",
     "axis_up": "Y",
     "apply_unit_scale": true,
     "apply_scale_options": "FBX_SCALE_NONE",

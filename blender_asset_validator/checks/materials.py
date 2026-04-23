@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import List
 
 import bpy
@@ -40,7 +41,7 @@ def check_materials(objects: List[bpy.types.Object], config: dict) -> List[Check
                 continue
 
             mat = slot.material
-            if not mat.use_nodes:
+            if not mat.use_nodes or mat.node_tree is None:
                 continue
 
             for node in mat.node_tree.nodes:
@@ -55,12 +56,29 @@ def check_materials(objects: List[bpy.types.Object], config: dict) -> List[Check
                         fix_hint="Open an image in the Image Texture node",
                         check_name="materials",
                     ))
-                elif not node.image.packed_file and not node.image.filepath:
+                    continue
+
+                image = node.image
+                if image.packed_file:
+                    continue
+
+                if image.source != "FILE" or not image.filepath:
                     results.append(CheckResult(
                         severity=Severity.ERROR,
-                        message=f"'{mat.name}' references missing texture '{node.image.name}'",
+                        message=f"'{mat.name}' references missing texture '{image.name}'",
                         object_name=obj.name,
-                        fix_hint="Relink or pack the texture: Image > Pack",
+                        fix_hint="Relink the texture file or pack it into the blend file",
+                        check_name="materials",
+                    ))
+                    continue
+
+                texture_path = Path(bpy.path.abspath(image.filepath, library=image.library))
+                if not texture_path.exists():
+                    results.append(CheckResult(
+                        severity=Severity.ERROR,
+                        message=f"'{mat.name}' references a missing file: {texture_path.name}",
+                        object_name=obj.name,
+                        fix_hint="Relink the texture file or pack it into the blend file",
                         check_name="materials",
                     ))
 

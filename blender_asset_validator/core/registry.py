@@ -1,12 +1,13 @@
-from typing import Callable, List
+from typing import Callable
 
-_CHECKS: List[Callable] = []
+_CHECKS: dict[str, Callable] = {}
 
 
 def register_check(func: Callable) -> Callable:
-    _CHECKS.append(func)
+    key = f"{func.__module__}.{func.__name__}"
+    _CHECKS[key] = func
     return func
 
 
-def get_checks() -> List[Callable]:
-    return list(_CHECKS)
+def get_checks() -> list[Callable]:
+    return list(_CHECKS.values())
