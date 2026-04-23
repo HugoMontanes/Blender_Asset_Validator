@@ -1,3 +1,4 @@
+[README.md](https://github.com/user-attachments/files/26985949/README.md)
 # Blender Asset Validator
 
 A Blender addon that validates 3D assets against configurable pipeline standards before exporting to FBX. Built as a Tech Artist pipeline tool — the kind of thing you'd write to enforce quality gates across a production team.
