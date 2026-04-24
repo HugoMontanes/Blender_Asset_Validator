@@ -12,16 +12,16 @@ _CONFIG_PATH = Path(__file__).parent.parent / "config" / "default.json"
 
 
 def load_config(path: Path = _CONFIG_PATH) -> dict[str, Any]:
-    with open(path, "r", encoding="utf-8") as f:
-        return json.load(f)
+    with open(path, "r", encoding="utf-8") as file:
+        return json.load(file)
 
 
 def load_preset(preset_name: str) -> dict[str, Any]:
     preset_path = Path(__file__).parent.parent / "config" / "presets" / f"{preset_name}.json"
     base = load_config()
     if preset_path.exists():
-        with open(preset_path, "r", encoding="utf-8") as f:
-            preset = json.load(f)
+        with open(preset_path, "r", encoding="utf-8") as file:
+            preset = json.load(file)
         base = _merge_dicts(base, preset)
     return base
 
