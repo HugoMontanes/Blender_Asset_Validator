@@ -10,6 +10,23 @@
     "check_degenerate_faces": true,
     "degenerate_face_area_epsilon": 1e-10
   },
+  "optimization": {
+    "auto_decimate": true,
+    "merge_by_distance": true,
+    "merge_distance": 0.0001,
+    "fix_degenerate_faces": true,
+    "degenerate_merge_distance": 0.0001
+  },
+  "lod": {
+    "collection": "LODs",
+    "export_target": "none",
+    "export_target_description": "none | unreal (one fbx per asset with LOD siblings) | unity_godot (one fbx per LOD level)",
+    "levels": [
+      {"suffix": "_LOD1", "ratio": 0.5},
+      {"suffix": "_LOD2", "ratio": 0.25},
+      {"suffix": "_LOD3", "ratio": 0.1}
+    ]
+  },
   "transforms": {
     "check_location": true,
     "check_rotation": true,

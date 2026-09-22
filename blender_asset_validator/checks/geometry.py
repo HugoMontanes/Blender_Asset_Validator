@@ -1,10 +1,15 @@
-from typing import List, Tuple
+from functools import partial
+from typing import List
 
 import bpy
 import bmesh
+from mathutils.bvhtree import BVHTree
 
+from ..core.mesh_utils import evaluated_triangle_count
 from ..core.registry import register_check
 from ..core.result import CheckResult, Severity
+from ..operations.cleanup import fix_degenerate_faces as _fix_degenerate_faces
+from ..operations.decimate import fix_polycount as _fix_polycount
 
 
 @register_check
@@ -13,19 +18,16 @@ def check_polycount(objects: List[bpy.types.Object], config: dict) -> List[Check
     budget = config.get("geometry", {}).get("max_triangles", 50000)
 
     for obj in objects:
-        mesh = obj.data
-        tri_count = 0
-        for poly in mesh.polygons:
-            n = len(poly.vertices)
-            tri_count += n - 2  # fan triangulation: n-2 tris per n-gon
+        tri_count = evaluated_triangle_count(obj)  # modifiers applied — what actually exports
 
         if tri_count > budget:
             results.append(CheckResult(
                 severity=Severity.ERROR,
-                message=f"'{obj.name}' has {tri_count:,} triangles (budget: {budget:,})",
+                message=f"'{obj.name}' has {tri_count:,} triangles with modifiers applied (budget: {budget:,})",
                 object_name=obj.name,
                 fix_hint=f"Reduce geometry. Target: ≤{budget:,} triangles",
                 check_name="polycount",
+                fix=partial(_fix_polycount, obj, config),
             ))
 
     return results
@@ -112,6 +114,7 @@ def check_degenerate_faces(objects: List[bpy.types.Object], config: dict) -> Lis
                 object_name=obj.name,
                 fix_hint="Delete zero-area faces or merge overlapping vertices before export",
                 check_name="geometry_cleanup",
+                fix=partial(_fix_degenerate_faces, obj, config),
             ))
 
     return results
@@ -119,34 +122,19 @@ def check_degenerate_faces(objects: List[bpy.types.Object], config: dict) -> Lis
 
 def _detect_uv_overlap(bm: bmesh.types.BMesh, uv_layer) -> bool:
     """
-    Grid-based UV overlap detection.
-    Discretises each triangle into cells and flags any cell hit by two
-    non-adjacent triangles. Resolution = 512×512, acceptable for game assets.
+    Exact UV overlap test via BVHTree triangle-triangle intersection. `bm.faces`
+    are pre-triangulated by the caller, so two triangles that only share an
+    edge (e.g. a triangulated quad) correctly do NOT count as overlapping —
+    the grid-based approach this replaced flagged that as a false positive.
     """
-    GRID = 512
-    cell_owner: dict[Tuple[int, int], int] = {}
+    triangles = [
+        [(loop[uv_layer].uv.x, loop[uv_layer].uv.y, 0.0) for loop in face.loops]
+        for face in bm.faces
+        if len(face.loops) == 3
+    ]
 
-    for face_idx, face in enumerate(bm.faces):
-        loops = list(face.loops)
-        if len(loops) < 3:
-            continue
+    if len(triangles) < 2:
+        return False
 
-        uvs = [loop[uv_layer].uv for loop in loops]
-        xs = [u.x for u in uvs]
-        ys = [u.y for u in uvs]
-
-        x0 = max(0, int(min(xs) * GRID))
-        x1 = min(GRID - 1, int(max(xs) * GRID))
-        y0 = max(0, int(min(ys) * GRID))
-        y1 = min(GRID - 1, int(max(ys) * GRID))
-
-        for gx in range(x0, x1 + 1):
-            for gy in range(y0, y1 + 1):
-                cell = (gx, gy)
-                prev = cell_owner.get(cell)
-                if prev is None:
-                    cell_owner[cell] = face_idx
-                elif prev != face_idx:
-                    return True
-
-    return False
+    tree = BVHTree.FromPolygons(triangles, all_triangles=True)
+    return len(tree.overlap(tree)) > 0

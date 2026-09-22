@@ -6,6 +6,8 @@ import bpy
 
 from .registry import get_checks
 from .result import CheckResult, Severity
+from .state import set_results
+from ..report.generator import generate_report
 
 
 _CONFIG_PATH = Path(__file__).parent.parent / "config" / "default.json"
@@ -26,12 +28,21 @@ def load_preset(preset_name: str) -> dict[str, Any]:
     return base
 
 
+def _default_mesh_objects() -> list[bpy.types.Object]:
+    # LOD copies (operations/lod.py) share their source's mesh data — they're
+    # validated/optimized through the source, not counted separately here.
+    return [
+        obj for obj in bpy.context.scene.objects
+        if obj.type == "MESH" and not obj.get("asset_validator_lod", False)
+    ]
+
+
 def run_validation(
     config: dict[str, Any],
     objects: list[bpy.types.Object] | None = None,
 ) -> list[CheckResult]:
     if objects is None:
-        objects = [obj for obj in bpy.context.scene.objects if obj.type == "MESH"]
+        objects = _default_mesh_objects()
 
     results: list[CheckResult] = []
 
@@ -45,6 +56,17 @@ def run_validation(
                 check_name=check.__name__,
             ))
 
+    return results
+
+
+def validate_and_store(
+    config: dict[str, Any],
+    objects: list[bpy.types.Object] | None = None,
+) -> list[CheckResult]:
+    """Run all checks, persist the results for the panel, and print the report."""
+    results = run_validation(config, objects)
+    set_results(results)
+    generate_report(results)
     return results
 
 

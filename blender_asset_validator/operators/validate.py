@@ -1,8 +1,7 @@
 import bpy
 
-from ..core.engine import load_config, run_validation
-from ..core.state import set_results
-from ..report.generator import generate_report
+from ..core.engine import load_config, validate_and_store
+from ..ui.redraw import redraw_view3d
 
 
 class ASSET_VALIDATOR_OT_validate(bpy.types.Operator):
@@ -12,9 +11,7 @@ class ASSET_VALIDATOR_OT_validate(bpy.types.Operator):
 
     def execute(self, context):
         config = load_config()
-        results = run_validation(config)
-        set_results(results)
-        generate_report(results)
+        results = validate_and_store(config)
 
         errors = sum(1 for r in results if r.severity.value == "ERROR")
         warnings = sum(1 for r in results if r.severity.value == "WARNING")
@@ -24,9 +21,5 @@ class ASSET_VALIDATOR_OT_validate(bpy.types.Operator):
         else:
             self.report({"INFO"}, f"Validation passed — {warnings} warning(s)")
 
-        # Force N-panel redraw
-        for area in context.screen.areas:
-            if area.type == "VIEW_3D":
-                area.tag_redraw()
-
+        redraw_view3d(context)
         return {"FINISHED"}

@@ -1,7 +1,9 @@
-from typing import List
+from typing import List, Optional
 from .result import CheckResult
 
-_results: List[CheckResult] = []
+# None = never validated this session; [] = validated, no findings. The panel
+# needs to tell those apart, so don't collapse this back to a bare [] default.
+_results: Optional[List[CheckResult]] = None
 
 
 def set_results(results: List[CheckResult]) -> None:
@@ -9,10 +11,10 @@ def set_results(results: List[CheckResult]) -> None:
     _results = results
 
 
-def get_results() -> List[CheckResult]:
+def get_results() -> Optional[List[CheckResult]]:
     return _results
 
 
 def clear_results() -> None:
     global _results
-    _results = []
+    _results = None
