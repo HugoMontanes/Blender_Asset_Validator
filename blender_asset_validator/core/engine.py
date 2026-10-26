@@ -10,29 +10,44 @@ from .state import set_results
 from ..report.generator import generate_report
 
 
-_CONFIG_PATH = Path(__file__).parent.parent / "config" / "default.json"
+_CONFIG_DIR = Path(__file__).parent.parent / "config"
+
+# Static list: Blender drops strings returned by a dynamic EnumProperty items callback.
+PRESET_ITEMS = [("NONE", "Default", "config/default.json only")] + [
+    (path.stem, path.stem.capitalize(), f"config/default.json + presets/{path.name}")
+    for path in sorted((_CONFIG_DIR / "presets").glob("*.json"))
+]
 
 
-def load_config(path: Path = _CONFIG_PATH) -> dict[str, Any]:
+def _read_json(path: Path) -> dict[str, Any]:
     with open(path, "r", encoding="utf-8") as file:
         return json.load(file)
 
 
-def load_preset(preset_name: str) -> dict[str, Any]:
-    preset_path = Path(__file__).parent.parent / "config" / "presets" / f"{preset_name}.json"
-    base = load_config()
-    if preset_path.exists():
-        with open(preset_path, "r", encoding="utf-8") as file:
-            preset = json.load(file)
-        base = _merge_dicts(base, preset)
-    return base
+def load_config() -> dict[str, Any]:
+    """Default rules with the scene's selected preset (panel dropdown) merged on top."""
+    config = _read_json(_CONFIG_DIR / "default.json")
+    preset = getattr(bpy.context.scene, "asset_validator_preset", "NONE")
+    if preset != "NONE":
+        config = _merge_dicts(config, _read_json(_CONFIG_DIR / "presets" / f"{preset}.json"))
+    return config
 
 
-def _default_mesh_objects() -> list[bpy.types.Object]:
-    # LOD copies (operations/lod.py) share their source's mesh data — they're
-    # validated/optimized through the source, not counted separately here.
+def get_validation_objects(config: dict[str, Any]) -> list[bpy.types.Object]:
+    """The export set. Validate, Fix and Export all use it, so the export gate
+    and the result indices always refer to the same objects."""
+    context = bpy.context
+    export_cfg = config.get("export", {})
+    if export_cfg.get("use_selection", True):
+        objects = context.selected_objects
+    elif export_cfg.get("use_active_collection", False):
+        objects = context.view_layer.active_layer_collection.collection.all_objects
+    else:
+        objects = context.scene.objects
+
+    # LOD copies share their source's mesh data — validated/exported through the source
     return [
-        obj for obj in bpy.context.scene.objects
+        obj for obj in objects
         if obj.type == "MESH" and not obj.get("asset_validator_lod", False)
     ]
 
@@ -42,7 +57,7 @@ def run_validation(
     objects: list[bpy.types.Object] | None = None,
 ) -> list[CheckResult]:
     if objects is None:
-        objects = _default_mesh_objects()
+        objects = get_validation_objects(config)
 
     results: list[CheckResult] = []
 

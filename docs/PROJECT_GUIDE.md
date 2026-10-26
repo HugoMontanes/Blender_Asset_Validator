@@ -44,7 +44,7 @@ The project is split into a few clear layers:
   This is the internal engine. It loads config, stores results, and runs the registered checks.
 
 - `operators/`
-  These are Blender actions. One operator validates the scene. Another validates and exports to FBX.
+  These are Blender actions. One operator validates the export set. Another validates and exports to FBX.
 
 - `ui/`
   This contains the panel shown in Blender's N-panel.
@@ -95,9 +95,7 @@ The validation flow is handled mainly by `core/engine.py`.
 
 ### Config loading
 
-`load_config()` reads `config/default.json`.
-
-`load_preset()` starts from the default config and applies preset overrides on top of it. The project now merges nested dictionaries correctly, which means a preset can override only one part of a section without deleting the rest of that section's defaults.
+`load_config()` reads `config/default.json` and merges the preset picked in the panel's **Preset** dropdown (`Scene.asset_validator_preset`) on top of it. Changing the preset clears the previous results. The project now merges nested dictionaries correctly, which means a preset can override only one part of a section without deleting the rest of that section's defaults.
 
 ### Running checks
 
@@ -221,7 +219,7 @@ This operator:
 4. blocks export if errors exist
 5. exports to FBX if validation passes
 
-A useful improvement in the current project is that export validation now follows export scope more closely. For example, if export is configured to use selected objects, the validator now checks the selected mesh objects instead of unrelated meshes elsewhere in the scene.
+Validate, Fix and Export all use `engine.get_validation_objects()`, so they check exactly the objects Export would export. For example, if export is configured to use selected objects, Validate checks the selected mesh objects instead of unrelated meshes elsewhere in the scene.
 
 Another important behavior is naming and file splitting:
 
@@ -246,7 +244,6 @@ It:
 
 - counts errors, warnings, and infos
 - prints a readable report to Blender's console
-- can optionally write a JSON report file
 
 This is useful because the same validation data can feed:
 

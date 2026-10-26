@@ -6,6 +6,8 @@ import bpy
 from ..core.registry import register_check
 from ..core.result import CheckResult, Severity
 
+_ON_DISK_SOURCES = {"FILE", "TILED", "SEQUENCE", "MOVIE"}
+
 
 @register_check
 def check_materials(objects: List[bpy.types.Object], config: dict) -> List[CheckResult]:
@@ -62,17 +64,21 @@ def check_materials(objects: List[bpy.types.Object], config: dict) -> List[Check
                 if image.packed_file:
                     continue
 
-                if image.source != "FILE" or not image.filepath:
+                if image.source not in _ON_DISK_SOURCES or not image.filepath:
                     results.append(CheckResult(
                         severity=Severity.ERROR,
-                        message=f"'{mat.name}' references missing texture '{image.name}'",
+                        message=f"'{mat.name}' uses image '{image.name}' that has no file on disk",
                         object_name=obj.name,
-                        fix_hint="Relink the texture file or pack it into the blend file",
+                        fix_hint="Save the image to a file or pack it into the blend file",
                         check_name="materials",
                     ))
                     continue
 
-                texture_path = Path(bpy.path.abspath(image.filepath, library=image.library))
+                filepath = bpy.path.abspath(image.filepath, library=image.library)
+                if image.source == "TILED":
+                    # ponytail: checks the first UDIM tile only (and not the <UVTILE> token); per-tile check if missing tiles bite
+                    filepath = filepath.replace("<UDIM>", str(image.tiles[0].number))
+                texture_path = Path(filepath)
                 if not texture_path.exists():
                     results.append(CheckResult(
                         severity=Severity.ERROR,

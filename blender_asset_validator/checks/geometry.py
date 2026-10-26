@@ -1,15 +1,18 @@
+from collections import defaultdict
 from functools import partial
 from typing import List
 
 import bpy
 import bmesh
-from mathutils.bvhtree import BVHTree
+from mathutils.geometry import intersect_tri_tri_2d
 
 from ..core.mesh_utils import evaluated_triangle_count
 from ..core.registry import register_check
 from ..core.result import CheckResult, Severity
 from ..operations.cleanup import fix_degenerate_faces as _fix_degenerate_faces
 from ..operations.decimate import fix_polycount as _fix_polycount
+
+_UV_SHRINK = 1e-4
 
 
 @register_check
@@ -121,20 +124,44 @@ def check_degenerate_faces(objects: List[bpy.types.Object], config: dict) -> Lis
 
 
 def _detect_uv_overlap(bm: bmesh.types.BMesh, uv_layer) -> bool:
-    """
-    Exact UV overlap test via BVHTree triangle-triangle intersection. `bm.faces`
-    are pre-triangulated by the caller, so two triangles that only share an
-    edge (e.g. a triangulated quad) correctly do NOT count as overlapping —
-    the grid-based approach this replaced flagged that as a false positive.
-    """
-    triangles = [
-        [(loop[uv_layer].uv.x, loop[uv_layer].uv.y, 0.0) for loop in face.loops]
-        for face in bm.faces
-        if len(face.loops) == 3
-    ]
+    """Not BVHTree.overlap: its tri-tri test treats coplanar triangles (every UV
+    triangle at z=0) as never intersecting. `bm.faces` are pre-triangulated."""
+    triangles = []
+    for face in bm.faces:
+        uvs = [loop[uv_layer].uv for loop in face.loops]
+        center = (uvs[0] + uvs[1] + uvs[2]) / 3
+        # Shrink toward the centroid so neighbours touching along an edge/vertex don't count
+        triangles.append([center.lerp(uv, 1.0 - _UV_SHRINK) for uv in uvs])
+    return _any_triangles_overlap(triangles)
 
+
+def _any_triangles_overlap(triangles) -> bool:
     if len(triangles) < 2:
         return False
 
-    tree = BVHTree.FromPolygons(triangles, all_triangles=True)
-    return len(tree.overlap(tree)) > 0
+    us = [p.x for tri in triangles for p in tri]
+    vs = [p.y for tri in triangles for p in tri]
+    min_u, min_v = min(us), min(vs)
+    cells = max(1, int(len(triangles) ** 0.5))
+    cell_w = (max(us) - min_u) / cells or 1.0
+    cell_h = (max(vs) - min_v) / cells or 1.0
+
+    def cell_range(lo, hi, origin, size):
+        return range(min(int((lo - origin) / size), cells - 1), min(int((hi - origin) / size), cells - 1) + 1)
+
+    grid = defaultdict(list)
+    for idx, tri in enumerate(triangles):
+        for cu in cell_range(min(p.x for p in tri), max(p.x for p in tri), min_u, cell_w):
+            for cv in cell_range(min(p.y for p in tri), max(p.y for p in tri), min_v, cell_h):
+                grid[cu, cv].append(idx)
+
+    tested = set()
+    for members in grid.values():
+        for pos, a in enumerate(members):
+            for b in members[pos + 1:]:
+                if (a, b) in tested:
+                    continue
+                tested.add((a, b))
+                if intersect_tri_tri_2d(*triangles[a], *triangles[b]):
+                    return True
+    return False

@@ -18,11 +18,3 @@ class CheckResult:
     check_name: str = ""
     fix: Optional[Callable[[], Optional[str]]] = None
 
-
-@dataclass
-class OperationResult:
-    operation_name: str
-    object_name: str
-    message: str
-    before_value: Optional[int] = None
-    after_value: Optional[int] = None

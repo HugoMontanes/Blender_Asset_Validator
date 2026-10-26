@@ -1,14 +1,15 @@
 import bpy
 
+from . import ObjectModeOnly
 from ..core.engine import load_config
 from ..operations.lod import generate_lods
 from ..ui.redraw import redraw_view3d
 
 
-class ASSET_VALIDATOR_OT_generate_lods(bpy.types.Operator):
+class ASSET_VALIDATOR_OT_generate_lods(ObjectModeOnly, bpy.types.Operator):
     bl_idname = "asset_validator.generate_lods"
     bl_label = "Generate LODs"
-    bl_description = "Create decimated LOD copies of the selected mesh objects (see config/default.json 'lod')"
+    bl_description = "Create (or regenerate) decimated LOD copies of the selected mesh objects (config 'lod')"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):
@@ -22,10 +23,11 @@ class ASSET_VALIDATOR_OT_generate_lods(bpy.types.Operator):
             self.report({"ERROR"}, "Select at least one source mesh object first")
             return {"CANCELLED"}
 
-        results = generate_lods(objects, config)
+        created = generate_lods(objects, config)
+        print("\n".join(created))
 
-        if results:
-            self.report({"INFO"}, f"Generated {len(results)} LOD object(s)")
+        if created:
+            self.report({"INFO"}, f"Generated {len(created)} LOD object(s)")
         else:
             self.report({"WARNING"}, "No LOD levels configured (config/default.json 'lod.levels')")
 

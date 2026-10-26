@@ -22,7 +22,8 @@ class ASSET_VALIDATOR_PT_main(bpy.types.Panel):
         layout = self.layout
         results = get_results()
 
-        # ── Actions ──────────────────────────────────────────────────────────
+        layout.prop(context.scene, "asset_validator_preset")
+
         col = layout.column(align=True)
         col.scale_y = 1.4
         col.operator("asset_validator.validate", icon="CHECKMARK")
@@ -41,7 +42,6 @@ class ASSET_VALIDATOR_PT_main(bpy.types.Panel):
         errors = [r for r in results if r.severity == Severity.ERROR]
         warnings = [r for r in results if r.severity == Severity.WARNING]
 
-        # ── Summary ──────────────────────────────────────────────────────────
         layout.separator()
         row = layout.row(align=True)
         row.alert = bool(errors)
@@ -52,7 +52,6 @@ class ASSET_VALIDATOR_PT_main(bpy.types.Panel):
         else:
             row.label(text="All checks passed", icon="CHECKMARK")
 
-        # ── Results list ─────────────────────────────────────────────────────
         if results:
             layout.separator()
             box = layout.box()
@@ -81,7 +80,6 @@ class ASSET_VALIDATOR_PT_main(bpy.types.Panel):
 
                 col.separator(factor=0.5)
 
-        # ── Export ───────────────────────────────────────────────────────────
         layout.separator()
         export_row = layout.row()
         export_row.enabled = not bool(errors)

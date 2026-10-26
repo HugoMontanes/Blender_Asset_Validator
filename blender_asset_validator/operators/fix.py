@@ -1,11 +1,14 @@
 import bpy
 
+from . import ObjectModeOnly
 from ..core.engine import load_config, validate_and_store
 from ..core.state import get_results
 from ..ui.redraw import redraw_view3d
 
+_STALE = "Scene changed since validation (undo or deleted object) — re-run Validate"
 
-class ASSET_VALIDATOR_OT_fix_result(bpy.types.Operator):
+
+class ASSET_VALIDATOR_OT_fix_result(ObjectModeOnly, bpy.types.Operator):
     bl_idname = "asset_validator.fix_result"
     bl_label = "Fix"
     bl_description = "Apply the automatic fix for this issue"
@@ -24,7 +27,12 @@ class ASSET_VALIDATOR_OT_fix_result(bpy.types.Operator):
             self.report({"WARNING"}, "No automatic fix for this issue")
             return {"CANCELLED"}
 
-        message = result.fix()
+        try:
+            message = result.fix()
+        except ReferenceError:  # the fix's bpy Object was freed by undo or deletion
+            self.report({"ERROR"}, _STALE)
+            return {"CANCELLED"}
+
         validate_and_store(load_config())
         redraw_view3d(context)
 
@@ -32,7 +40,7 @@ class ASSET_VALIDATOR_OT_fix_result(bpy.types.Operator):
         return {"FINISHED"}
 
 
-class ASSET_VALIDATOR_OT_fix_all(bpy.types.Operator):
+class ASSET_VALIDATOR_OT_fix_all(ObjectModeOnly, bpy.types.Operator):
     bl_idname = "asset_validator.fix_all"
     bl_label = "Fix All"
     bl_description = "Apply every automatic fix available for the current results"
@@ -44,15 +52,24 @@ class ASSET_VALIDATOR_OT_fix_all(bpy.types.Operator):
             self.report({"WARNING"}, "Nothing to fix — run Validate first")
             return {"CANCELLED"}
 
-        fixed = 0
+        fixed = stale = 0
         for result in results:
-            if result.fix is not None and result.fix() is not None:
-                fixed += 1
+            if result.fix is None:
+                continue
+            # Keep going on a stale result: returning CANCELLED after earlier fixes
+            # already changed data would leave those changes without an undo step.
+            try:
+                if result.fix() is not None:
+                    fixed += 1
+            except ReferenceError:
+                stale += 1
 
         validate_and_store(load_config())
         redraw_view3d(context)
 
-        if fixed:
+        if stale:
+            self.report({"WARNING"}, f"Applied {fixed} fix(es), skipped {stale}: {_STALE}")
+        elif fixed:
             self.report({"INFO"}, f"Applied {fixed} fix(es)")
         else:
             self.report({"INFO"}, "No automatic fixes available")

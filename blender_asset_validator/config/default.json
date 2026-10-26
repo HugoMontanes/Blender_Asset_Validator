@@ -11,7 +11,6 @@
     "degenerate_face_area_epsilon": 1e-10
   },
   "optimization": {
-    "auto_decimate": true,
     "merge_by_distance": true,
     "merge_distance": 0.0001,
     "fix_degenerate_faces": true,

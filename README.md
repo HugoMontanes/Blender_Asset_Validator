@@ -61,7 +61,7 @@ If `export.individual_files` is set to `false`, the addon exports one combined F
 
 ## Configuration
 
-Rules are driven by `config/default.json`. Edit it directly or drop a preset into `config/presets/` and load it via `engine.load_preset("preset_name")`.
+Rules are driven by `config/default.json`. Edit it directly, or drop a preset into `config/presets/` and pick it in the panel's **Preset** dropdown: its values are merged on top of `default.json`. Validate, Fix and Export all check the same objects, the ones Export would export (`export.use_selection` / `use_active_collection`). The buttons are disabled in Edit Mode.
 
 ```json
 {
