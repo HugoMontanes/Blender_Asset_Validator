@@ -17,6 +17,7 @@ from . import checks  # noqa: F401 (side-effect import)
 from .operators.validate import ASSET_VALIDATOR_OT_validate
 from .operators.fix import ASSET_VALIDATOR_OT_fix_result, ASSET_VALIDATOR_OT_fix_all
 from .operators.lod import ASSET_VALIDATOR_OT_generate_lods
+from .operators.topology import ASSET_VALIDATOR_OT_clean_topology, ASSET_VALIDATOR_OT_retopologize
 from .operators.export import ASSET_VALIDATOR_OT_export_fbx
 from .ui.panel import ASSET_VALIDATOR_PT_main
 from .core.engine import PRESET_ITEMS
@@ -27,6 +28,8 @@ _CLASSES = (
     ASSET_VALIDATOR_OT_fix_result,
     ASSET_VALIDATOR_OT_fix_all,
     ASSET_VALIDATOR_OT_generate_lods,
+    ASSET_VALIDATOR_OT_clean_topology,
+    ASSET_VALIDATOR_OT_retopologize,
     ASSET_VALIDATOR_OT_export_fbx,
     ASSET_VALIDATOR_PT_main,
 )

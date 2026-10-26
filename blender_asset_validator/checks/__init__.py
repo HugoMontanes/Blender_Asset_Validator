@@ -1,1 +1,1 @@
-from . import naming, transforms, geometry, materials
+from . import naming, transforms, geometry, topology, materials

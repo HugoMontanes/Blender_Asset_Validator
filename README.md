@@ -21,6 +21,7 @@ By default, selected mesh objects are exported as separate FBX files named after
 | **Ngons** | Faces with more than 4 vertices |
 | **UVs** | Missing UV maps, overlapping UV islands |
 | **Geometry cleanup** | Degenerate / zero-area faces that should be fixed before export |
+| **Topology** | Edge-flow rules: poles with 6+ edges, 3/5-edge poles on smoothly curved areas (hard corners are fine), sliver triangles |
 | **Materials** | Empty material slots, Image Texture nodes with no image or missing file |
 
 Each failed check shows the offending object, a description of the problem, and a fix hint.
@@ -57,6 +58,14 @@ With the default export settings, selecting `Chair`, `Table`, and `Lamp` will cr
 
 If `export.individual_files` is set to `false`, the addon exports one combined FBX instead.
 
+### Mesh optimization
+
+All three work on the selected meshes and can be undone.
+
+- **Generate LODs** bakes `_LOD1..n` meshes into the `LODs` collection, each one from the previous level: planar dissolve of flat areas, then a collapse to `ratio x` the source triangles that removes open borders, seams, UV/material borders and sharp edges last, then the source's normals are transferred. Set `lod.clean_topology` to run Clean Topology on every level (quads instead of triangles).
+- **Clean Topology** edits the mesh in place without changing its shape or UVs: triangles to quads, flat edge loops dissolved (only whole loops on straight, flat strips, so quads stay quads), and the free vertices relaxed along the original surface for even edge flow. Borders, seams, sharp/hard edges and material borders are pinned. Relax is skipped on objects with a Subdivision/Multires modifier or shape keys. On a LOD it relaxes onto the full-resolution source.
+- **Retopologize** creates `<name>_Retopo`, an all-quad mesh whose edge flow follows the curvature (Blender's QuadriFlow), and hides the original; the mesh must be manifold with consistent normals, otherwise it reports the failure and creates nothing. Materials, UVs and normals are resampled from the original and seams are marked at UV island borders; re-unwrap if the islands need to be cleaner. Triangle ratio and symmetry are in the redo panel (F9).
+
 ---
 
 ## Configuration
@@ -85,6 +94,21 @@ Rules are driven by `config/default.json`. Edit it directly, or drop a preset in
     "require_material": true,
     "check_textures": true
   },
+  "topology": {
+    "check_topology": true,
+    "max_pole_valence": 5,
+    "pole_curvature_angle": 10.0,
+    "min_triangle_quality": 0.1,
+    "flat_angle": 1.0,
+    "feature_angle": 30.0,
+    "quad_angle": 40.0,
+    "relax_iterations": 5,
+    "relax_factor": 0.5
+  },
+  "lod": {
+    "clean_topology": false,
+    "levels": [{"suffix": "_LOD1", "ratio": 0.5}, {"suffix": "_LOD2", "ratio": 0.25}, {"suffix": "_LOD3", "ratio": 0.1}]
+  },
   "export": {
     "path": "//exports/",
     "axis_forward": "X",
@@ -102,6 +126,8 @@ Key export options:
 - `use_selection`: validate and export only selected mesh objects
 - `use_active_collection`: use the active collection instead of selection
 - `individual_files`: export one FBX per asset instead of one combined FBX
+
+Topology angles are in degrees: `flat_angle` is the bend still treated as flat (dissolve), `feature_angle` the bend from which an edge counts as a hard edge (pinned, poles allowed), `quad_angle` the tolerance when joining triangles into quads. `min_triangle_quality` is 1 for an equilateral triangle.
 
 Two presets are included:
 
@@ -160,9 +186,14 @@ blender_asset_validator/
 |   |-- naming.py
 |   |-- transforms.py
 |   |-- geometry.py          # Polycount, ngons, UV overlap, degenerate faces
+|   |-- topology.py          # Edge-flow rules (poles, slivers)
 |   `-- materials.py
+|-- operations/
+|   |-- lod.py               # LOD baking
+|   `-- topology.py          # Clean Topology, Retopologize, shared feature detection
 |-- operators/
 |   |-- validate.py          # Validate operator
+|   |-- lod.py, topology.py  # Generate LODs, Clean Topology, Retopologize
 |   `-- export.py            # FBX export operator with per-asset export support
 |-- ui/
 |   `-- panel.py             # N-panel UI

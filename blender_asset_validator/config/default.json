@@ -16,8 +16,20 @@
     "fix_degenerate_faces": true,
     "degenerate_merge_distance": 0.0001
   },
+  "topology": {
+    "check_topology": true,
+    "max_pole_valence": 5,
+    "pole_curvature_angle": 10.0,
+    "min_triangle_quality": 0.1,
+    "flat_angle": 1.0,
+    "feature_angle": 30.0,
+    "quad_angle": 40.0,
+    "relax_iterations": 5,
+    "relax_factor": 0.5
+  },
   "lod": {
     "collection": "LODs",
+    "clean_topology": false,
     "export_target": "none",
     "export_target_description": "none | unreal (one fbx per asset with LOD siblings) | unity_godot (one fbx per LOD level)",
     "levels": [

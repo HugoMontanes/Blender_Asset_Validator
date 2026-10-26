@@ -9,7 +9,7 @@ from ..ui.redraw import redraw_view3d
 class ASSET_VALIDATOR_OT_generate_lods(ObjectModeOnly, bpy.types.Operator):
     bl_idname = "asset_validator.generate_lods"
     bl_label = "Generate LODs"
-    bl_description = "Create (or regenerate) decimated LOD copies of the selected mesh objects (config 'lod')"
+    bl_description = "Bake (or regenerate) shape-preserving LOD meshes of the selected objects (config 'lod')"
     bl_options = {"REGISTER", "UNDO"}
 
     def execute(self, context):

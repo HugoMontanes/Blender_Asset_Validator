@@ -33,6 +33,9 @@ class ASSET_VALIDATOR_PT_main(bpy.types.Panel):
         lod_row = layout.row()
         lod_row.scale_y = 1.2
         lod_row.operator("asset_validator.generate_lods", icon="DUPLICATE")
+        topo_row = layout.row(align=True)
+        topo_row.operator("asset_validator.clean_topology", icon="MOD_REMESH")
+        topo_row.operator("asset_validator.retopologize", icon="MESH_GRID")
 
         if results is None:
             layout.separator()
