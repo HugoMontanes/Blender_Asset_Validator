@@ -63,14 +63,17 @@ class ASSET_VALIDATOR_OT_retopologize(ObjectModeOnly, bpy.types.Operator):
             self.report({"ERROR"}, "Select at least one mesh object first")
             return {"CANCELLED"}
 
-        created, failed = [], []
+        created, notes, failed = [], [], []
         for obj in objects:
             try:
-                created.append(retopologize(context, obj, self.ratio, self.use_symmetry, merge_distance))
+                new, note = retopologize(context, obj, self.ratio, self.use_symmetry, merge_distance)
             except RuntimeError as e:
                 failed.append(f"'{obj.name}': {str(e).strip().splitlines()[-1]}")
                 continue
+            created.append(new)
+            notes.append(f"'{obj.name}': {note}")
             obj.hide_set(True)
+        print("\n".join(notes + failed))
 
         for obj in objects:
             obj.select_set(False)
@@ -84,5 +87,5 @@ class ASSET_VALIDATOR_OT_retopologize(ObjectModeOnly, bpy.types.Operator):
         if failed:
             self.report({"WARNING"}, f"Retopologized {len(created)}, failed {len(failed)} — " + "; ".join(failed))
         else:
-            self.report({"INFO"}, f"Created {len(created)} retopologized object(s)")
+            self.report({"INFO"}, notes[0] if len(notes) == 1 else f"Created {len(created)} retopologized object(s) — {'; '.join(notes)}")
         return {"FINISHED"} if created else {"CANCELLED"}

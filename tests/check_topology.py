@@ -135,7 +135,7 @@ try:
     for f in bm.faces: f.material_index = 0 if f.calc_center_median().z >= 0 else 1
     rs = obj_from_bm("Rsphere", bm, mats=2, smooth=True)
     s_rs = topo.Surface(rs.data); n0 = tris(rs)
-    new = topo.retopologize(bpy.context, rs, 0.5, False, 1e-4)
+    new, _ = topo.retopologize(bpy.context, rs, 0.5, False, 1e-4)
     say(f"   retopo: {n0} tris -> {len(new.data.polygons)} faces, {quad_pct(new)}% quads")
     check("retopo: all quads", quad_pct(new) == 100)
     check("retopo: face count near target", abs(tris(new) - n0 * 0.5) < n0 * 0.5 * 0.3, f"{tris(new)} tris vs {n0*0.5:.0f}")

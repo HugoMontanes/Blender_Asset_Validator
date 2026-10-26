@@ -11,6 +11,8 @@ from ..core.mesh_utils import bake_mesh
 
 _UV_EPSILON = 1e-5
 _MAX_DISSOLVE_PASSES = 32
+_MIN_PART_FACES = 200  # smaller loose parts are kept as they are: QuadriFlow erases them
+_MAX_REMESH_TRIS = 100_000  # QuadriFlow crashes Blender on inputs much denser than this
 
 
 def topology_settings(config: dict) -> dict:
@@ -76,48 +78,70 @@ def clean_bmesh(bm: bmesh.types.BMesh, surface: "Surface", cfg: dict, relax: boo
         _relax(bm, surface, cfg)
 
 
-def retopologize(context, obj: bpy.types.Object, ratio: float, symmetry: bool, merge_distance: float) -> bpy.types.Object:
-    """New quad object built by QuadriFlow from obj's evaluated mesh, with
-    materials, UVs and normals resampled from the original. `merge_distance`
-    is in world units. Raises RuntimeError."""
+def retopologize(context, obj: bpy.types.Object, ratio: float, symmetry: bool, merge_distance: float):
+    """(new object, note): quads built by QuadriFlow from obj's evaluated mesh,
+    one loose part at a time, with materials, UVs and normals resampled from the
+    original. Parts too small for QuadriFlow, or that it fails on, keep their
+    original faces. `merge_distance` is in world units. Raises RuntimeError
+    if no part could be remeshed."""
     mesh = bake_mesh(obj)
     surface = Surface(mesh)
     smooth = any(p.use_smooth for p in mesh.polygons)
     target_faces = max(8, round(sum(len(p.vertices) - 2 for p in mesh.polygons) * ratio / 2))  # quad = 2 tris
+    work = mesh.copy()
+    local_distance = merge_distance / max(max(abs(c) for c in obj.matrix_world.to_scale()), 1e-12)
+    problems = _repair_for_quadriflow(work, local_distance)  # only the copy; UVs come from `surface`
+    bm = bmesh.new()
+    bm.from_mesh(work)
+    bpy.data.meshes.remove(work)
 
-    new = bpy.data.objects.new(f"{obj.name}_Retopo", mesh.copy())
-    new.matrix_world = obj.matrix_world.copy()
-    for coll in obj.users_collection:
-        coll.objects.link(new)
+    total_tris = max(sum(len(f.verts) - 2 for f in bm.faces), 1)  # after the repair: splits the target between parts
+    # Mirroring a part that sits on one side of X would erase it: symmetric runs stay whole
+    parts = [list(bm.faces)] if symmetry else _loose_parts(bm)
+    kept, remeshed, failed, capped = [], [], 0, False
+    out = bmesh.new()
     try:
-        local_distance = merge_distance / max(max(abs(c) for c in obj.matrix_world.to_scale()), 1e-12)
-        problems = _repair_for_quadriflow(new.data, local_distance)  # only the copy; UVs come from `surface`
-        before = (len(new.data.vertices), len(new.data.polygons))
-        try:
-            with context.temp_override(object=new, active_object=new, selected_objects=[new], selected_editable_objects=[new]):
-                bpy.ops.object.quadriflow_remesh(
-                    mode="FACES", target_faces=target_faces, use_mesh_symmetry=symmetry,
-                    use_preserve_sharp=True, use_preserve_boundary=True, smooth_normals=False, seed=0,
-                )
-            # QuadriFlow reports most failures only to the UI and leaves the mesh untouched
-            polys = new.data.polygons
-            failed = not polys or (len(new.data.vertices), len(polys)) == before or any(len(p.vertices) != 4 for p in polys)
-        except RuntimeError:
-            failed = True
-        if failed:
+        for part in parts:
+            if len(part) < _MIN_PART_FACES and len(parts) > 1:
+                kept.extend(part)  # QuadriFlow's uniform quad size would erase it
+                continue
+            faces = max(8, round(target_faces * sum(len(f.verts) - 2 for f in part) / total_tris))
+            capped |= faces > _MAX_REMESH_TRIS // 2
+            result = _quadriflow(context, _part_mesh(bm, part), min(faces, _MAX_REMESH_TRIS // 2), symmetry)
+            if result is None:
+                failed += 1
+                kept.extend(part)
+            else:
+                remeshed.append(result)
+        if not remeshed:
             raise RuntimeError(
                 "QuadriFlow failed: " + ", ".join(problems)
                 + " (Edit Mode > Select > All by Trait > Non Manifold)"
                 if problems else
                 "QuadriFlow failed on a clean manifold mesh — try another Triangle Ratio"
             )
-    except RuntimeError:
-        old = new.data
-        bpy.data.objects.remove(new)
-        bpy.data.meshes.remove(old)
-        raise
+        for result in remeshed:
+            out.from_mesh(result)  # from_mesh appends to what's already in `out`
+        if kept:
+            part = _part_mesh(bm, kept)
+            out.from_mesh(part)
+            bpy.data.meshes.remove(part)
+
+        new_mesh = bpy.data.meshes.new(f"{obj.name}_Retopo")
+        out.to_mesh(new_mesh)
     finally:
+        for result in remeshed:
+            bpy.data.meshes.remove(result)
+        bm.free()
+        out.free()
         bpy.data.meshes.remove(mesh)
+
+    for mat in obj.data.materials:
+        new_mesh.materials.append(mat)
+    new = bpy.data.objects.new(new_mesh.name, new_mesh)
+    new.matrix_world = obj.matrix_world.copy()
+    for coll in obj.users_collection:
+        coll.objects.link(new)
 
     bm = bmesh.new()
     bm.from_mesh(new.data)
@@ -131,7 +155,83 @@ def retopologize(context, obj: bpy.types.Object, ratio: float, symmetry: bool, m
     bm.free()
     if smooth:
         transfer_normals(new.data, obj)
-    return new
+
+    notes = [f"{len(new_mesh.polygons):,} faces from {len(remeshed)} part(s)"]
+    small = len(parts) - len(remeshed) - failed
+    if small:
+        notes.append(f"{small} small part(s) kept as they were")
+    if failed:
+        notes.append(f"{failed} part(s) QuadriFlow failed on kept as they were")
+    if capped:
+        notes.append(f"capped at {_MAX_REMESH_TRIS // 2:,} quads per part (QuadriFlow crashes above that)")
+    return new, ", ".join(notes)
+
+
+def _loose_parts(bm) -> list:
+    """Faces of bm grouped by connected piece, largest first."""
+    seen, parts = set(), []
+    for face in bm.faces:
+        if face in seen:
+            continue
+        seen.add(face)
+        part, stack = [], [face]
+        while stack:
+            f = stack.pop()
+            part.append(f)
+            for edge in f.edges:
+                for g in edge.link_faces:
+                    if g not in seen:
+                        seen.add(g)
+                        stack.append(g)
+        parts.append(part)
+    return sorted(parts, key=len, reverse=True)
+
+
+def _part_mesh(bm, faces) -> bpy.types.Mesh:
+    """New mesh with only `faces` of bm."""
+    keep = set(faces)
+    part = bm.copy()
+    part.faces.ensure_lookup_table()
+    doomed = [f for f, original in zip(part.faces, bm.faces) if original not in keep]
+    bmesh.ops.delete(part, geom=doomed, context="FACES")
+    mesh = bpy.data.meshes.new("_AssetValidator_part")
+    part.to_mesh(mesh)
+    part.free()
+    return mesh
+
+
+def _quadriflow(context, mesh: bpy.types.Mesh, target_faces: int, symmetry: bool) -> Optional[bpy.types.Mesh]:
+    """`mesh` remeshed in place into quads (pre-decimated if too dense for QuadriFlow),
+    or None after freeing it. The caller resamples it onto the original surface."""
+    tmp = bpy.data.objects.new("_AssetValidator_retopo_tmp", mesh)
+    context.scene.collection.objects.link(tmp)
+    try:
+        tris = sum(len(p.vertices) - 2 for p in mesh.polygons)
+        if tris > _MAX_REMESH_TRIS:
+            # shortcut: only the input is thinned — detail finer than the cap's edge length is lost
+            tmp.modifiers.new("cap", "DECIMATE").ratio = _MAX_REMESH_TRIS / tris
+            tmp.data = bake_mesh(tmp)
+            tmp.modifiers.clear()
+            bpy.data.meshes.remove(mesh)
+        before = (len(tmp.data.vertices), len(tmp.data.polygons))
+        try:
+            with context.temp_override(object=tmp, active_object=tmp, selected_objects=[tmp], selected_editable_objects=[tmp]):
+                bpy.ops.object.quadriflow_remesh(
+                    mode="FACES", target_faces=target_faces, use_mesh_symmetry=symmetry,
+                    use_preserve_sharp=True, use_preserve_boundary=True, smooth_normals=False, seed=0,
+                )
+            # QuadriFlow reports most failures only to the UI and leaves the mesh untouched
+            polys = tmp.data.polygons
+            ok = polys and (len(tmp.data.vertices), len(polys)) != before and all(len(p.vertices) == 4 for p in polys)
+        except RuntimeError:
+            ok = False
+        result = tmp.data
+    finally:
+        bpy.data.objects.remove(tmp)
+    if ok:
+        return result
+    bpy.data.meshes.remove(result)
+    return None
 
 
 def _repair_for_quadriflow(mesh: bpy.types.Mesh, merge_distance: float) -> list:
@@ -154,6 +254,9 @@ def _repair_for_quadriflow(mesh: bpy.types.Mesh, merge_distance: float) -> list:
     raw, raw_problems = cleaned(weld=False)
     weld_hurts = sum(welded_problems.values()) > sum(raw_problems.values())
     bm, counts = (raw, raw_problems) if weld_hurts else (welded, welded_problems)
+    if any(counts.values()):
+        _split_non_manifold(bm)
+        counts = _manifold_problems(bm)
     bm.to_mesh(mesh)
     welded.free()
     raw.free()
@@ -165,6 +268,15 @@ def _repair_for_quadriflow(mesh: bpy.types.Mesh, merge_distance: float) -> list:
             f"({sum(welded_problems.values())} issues) — likely layers closer than that"
         )
     return problems
+
+
+def _split_non_manifold(bm) -> None:
+    """Cut the mesh open where QuadriFlow refuses it: edges shared by 3+ faces
+    become borders (kept by use_preserve_boundary) and surfaces touching at one
+    vertex get a vertex each. Only the remesh input changes, never the asset."""
+    bmesh.ops.split_edges(bm, edges=[e for e in bm.edges if len(e.link_faces) > 2])
+    for v in [v for v in bm.verts if not v.is_manifold and v.link_faces]:
+        bmesh.utils.vert_separate(v, [])  # no edges: just separates the disjoint face fans
 
 
 def _manifold_problems(bm) -> dict:

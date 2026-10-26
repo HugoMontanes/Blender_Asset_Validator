@@ -16,7 +16,8 @@ class ASSET_VALIDATOR_OT_export_fbx(ObjectModeOnly, bpy.types.Operator):
     def execute(self, context):
         config = load_config()
         export_cfg = config.get("export", {})
-        validation_objects = get_validation_objects(config)
+        # Selected LODs ride along with their source (with_lods), never as assets of their own
+        validation_objects = [o for o in get_validation_objects(config) if not o.get("asset_validator_lod", False)]
 
         if not validation_objects:
             self.report({"ERROR"}, "Export blocked: no mesh objects are available for export")
@@ -27,7 +28,8 @@ class ASSET_VALIDATOR_OT_export_fbx(ObjectModeOnly, bpy.types.Operator):
             self.report({"ERROR"}, f"Save the .blend first — export path '{export_path}' is relative to it")
             return {"CANCELLED"}
 
-        results = validate_and_store(config, objects=validation_objects)
+        # Gate everything that will be written, LOD meshes included
+        results = validate_and_store(config, objects=[o for obj in validation_objects for o in _with_lods(obj, config)])
 
         errors = [r for r in results if r.severity == Severity.ERROR]
         if errors:
@@ -52,15 +54,16 @@ class ASSET_VALIDATOR_OT_export_fbx(ObjectModeOnly, bpy.types.Operator):
         return {"FINISHED"}
 
 
+def _with_lods(obj, config):
+    return [obj] if config.get("lod", {}).get("export_target", "none") == "none" else [obj, *lods_of(obj)]
+
+
 def _export_fbx_files(context, config, validation_objects, export_dir):
     export_cfg = config.get("export", {})
     export_target = config.get("lod", {}).get("export_target", "none")
 
-    def with_lods(obj):
-        return [obj] if export_target == "none" else [obj, *lods_of(obj)]
-
     if not export_cfg.get("individual_files", True):
-        objects = [o for obj in validation_objects for o in with_lods(obj)]
+        objects = [o for obj in validation_objects for o in _with_lods(obj, config)]
         name = _get_combined_export_name(context, export_cfg, validation_objects)
         return [_export_objects(context, export_cfg, objects, name, export_dir)]
 
@@ -69,13 +72,13 @@ def _export_fbx_files(context, config, validation_objects, export_dir):
         return [
             _export_objects(context, export_cfg, [lod_obj], lod_obj.name, export_dir)
             for obj in validation_objects
-            for lod_obj in with_lods(obj)
+            for lod_obj in _with_lods(obj, config)
         ]
 
     # "unreal": base + its _LODn siblings in ONE fbx — Unreal auto-detects LODs
-    # from that naming convention. "none": with_lods() is just the object.
+    # from that naming convention. "none": _with_lods() is just the object.
     return [
-        _export_objects(context, export_cfg, with_lods(obj), obj.name, export_dir)
+        _export_objects(context, export_cfg, _with_lods(obj, config), obj.name, export_dir)
         for obj in validation_objects
     ]
 

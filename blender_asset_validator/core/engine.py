@@ -45,11 +45,7 @@ def get_validation_objects(config: dict[str, Any]) -> list[bpy.types.Object]:
     else:
         objects = context.scene.objects
 
-    # LOD copies share their source's mesh data — validated/exported through the source
-    return [
-        obj for obj in objects
-        if obj.type == "MESH" and not obj.get("asset_validator_lod", False)
-    ]
+    return [obj for obj in objects if obj.type == "MESH"]
 
 
 def run_validation(

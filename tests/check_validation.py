@@ -212,10 +212,10 @@ select(good, bad_name)
 AV.generate_lods()
 lods = [o for o in bpy.data.objects if o.get("asset_validator_lod")]
 check("regenerating LODs does not duplicate", len(lods) == 6, str(sorted(o.name for o in lods)))
-check("LODs excluded from validation set", all(o not in engine.get_validation_objects(engine.load_config()) for o in lods))
-# LOD still selected? validation set filter
-select(good, *[o for o in lods if o.name.startswith("GoodCube")])
-check("LOD selection filtered", [o.name for o in engine.get_validation_objects(engine.load_config())] == ["GoodCube"])
+select(good)
+check("unselected LODs not in validation set", all(o not in engine.get_validation_objects(engine.load_config()) for o in lods))
+select(*[o for o in lods if o.name.startswith("GoodCube")])
+check("selected LODs validate on their own", AV.validate() == {"FINISHED"} and len(engine.get_validation_objects(engine.load_config())) == 3)
 
 # ---------- 7. Export ----------
 select(good)
@@ -249,6 +249,12 @@ check("export unreal -> 1 fbx per asset", r == {"FINISHED"} and files == ["GoodC
 sz_none = os.path.getsize(os.path.join(exports, "GoodCube.fbx"))
 r, files = run_export("unity_godot")
 check("export unity_godot -> 1 fbx per level", files == ["GoodCube.fbx", "GoodCube_LOD1.fbx", "GoodCube_LOD2.fbx", "GoodCube_LOD3.fbx"], f"{r} {files}")
+r, files = run_export("unreal", objs=[good, *lod_ops.lods_of(good)])
+check("selected LODs not exported twice", r == {"FINISHED"} and files == ["GoodCube.fbx"], f"{r} {files}")
+lod1 = lod_ops.lods_of(good)[0]; lod1.name = "bad lod"
+r, files = run_export("unreal")
+check("export gate validates the LODs it writes", r == {"CANCELLED"} and not files, f"{r} {files}")
+lod1.name = "GoodCube_LOD1"
 r, files = run_export("unreal", individual=False)
 check("export combined unreal -> 1 fbx", r == {"FINISHED"} and len(files) == 1, f"{r} {files}")
 

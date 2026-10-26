@@ -21,20 +21,28 @@ try:
         for p in me.polygons: p.use_smooth = smooth
         o = bpy.data.objects.new(name, me); bpy.context.scene.collection.objects.link(o); return o
     def tris(m): return sum(len(p.vertices) - 2 for p in m.polygons)
+    def _bm(o): b = bmesh.new(); b.from_mesh(o.data); return b
 
-    # QuadriFlow silent failures now raise and leave nothing behind
-    bm = bmesh.new(); vs = [bm.verts.new(p) for p in [(0,0,0),(1,0,0),(0,1,0),(0,-1,0),(0,0,1)]]
-    for t in [(0,1,2),(0,1,3),(0,1,4)]: bm.faces.new([vs[i] for i in t])
+    # 3+ faces on an edge (a fin) and two shells touching at one vertex: cut open, then remeshed
+    bm = bmesh.new(); bmesh.ops.create_uvsphere(bm, u_segments=32, v_segments=16, radius=1.0)
+    e = next(e for e in bm.edges if e.verts[0].co.z > 0.5 and e.verts[1].co.z > 0.5)
+    tip = bm.verts.new(e.verts[0].co * 1.5); bm.faces.new([e.verts[0], e.verts[1], tip])
+    top = max(bm.verts, key=lambda v: v.co.z).co.copy()
+    ret = bmesh.ops.create_uvsphere(bm, u_segments=16, v_segments=8, radius=0.5)
+    low = min(ret["verts"], key=lambda v: v.co.z)
+    bmesh.ops.translate(bm, verts=ret["verts"], vec=top - low.co)
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-5)  # spheres now share the pole vertex
     nm = mk("NonManifold", bm)
+    check("fixture is non-manifold", any(topo._manifold_problems(_bm(nm)).values()))
     bm = bmesh.new(); bmesh.ops.create_uvsphere(bm, u_segments=32, v_segments=16, radius=1.0)
     bmesh.ops.reverse_faces(bm, faces=[f for f in bm.faces if f.calc_center_median().x > 0])
     fl = mk("Flipped", bm)
     bm = bmesh.new(); bmesh.ops.create_uvsphere(bm, u_segments=32, v_segments=16, radius=1.0)
     bmesh.ops.split_edges(bm, edges=bm.edges)
     sp = mk("SplitFbx", bm, smooth=True)
-    for o, should_work in ((nm, False), (fl, True), (sp, True)):
+    for o, should_work in ((nm, True), (fl, True), (sp, True)):
         try:
-            n = topo.retopologize(bpy.context, o, 0.5, False, 1e-4); ok = True
+            n, note = topo.retopologize(bpy.context, o, 0.5, False, 1e-4); ok = True
             msg = f"{len(n.data.polygons)} quads"
         except RuntimeError as e:
             ok, msg = False, str(e)
@@ -51,8 +59,8 @@ try:
     for name, thickness, scale in (("GlassThin", 1e-4, 1.0), ("GlassCmScaled", 1e-3, 0.01)):
         g = glass(name, thickness, scale)
         try:
-            n = topo.retopologize(bpy.context, g, 0.5, False, 1e-4)
-            check(f"retopo {name}: thin shell not fused by welding", len(n.data.polygons) > 0, f"{len(n.data.polygons)} quads")
+            n, note = topo.retopologize(bpy.context, g, 0.5, False, 1e-4)
+            check(f"retopo {name}: thin shell not fused by welding", len(n.data.polygons) > 0, f"{len(n.data.polygons)} quads; {note}")
         except RuntimeError as e:
             check(f"retopo {name}: thin shell not fused by welding", False, str(e)[:200])
     bm = bmesh.new(); bm.loops.layers.uv.new()
@@ -62,12 +70,24 @@ try:
     bmesh.ops.reverse_faces(bm, faces=[g for g in dup["geom"] if isinstance(g, bmesh.types.BMFace)])
     ds = mk("DoubleSided", bm, smooth=True)
     try:
-        n = topo.retopologize(bpy.context, ds, 0.5, False, 1e-4)
+        n, note = topo.retopologize(bpy.context, ds, 0.5, False, 1e-4)
         check("retopo exact double-sided glass", len(n.data.polygons) > 0, f"{len(n.data.polygons)} quads")
     except RuntimeError as e:
         check("retopo exact double-sided glass", False, str(e)[:200])
 
     check("retopo: original untouched by the repair", len(sp.data.vertices) == len(sp.data.loops))
+
+    # small loose parts (teeth, rivets) survive instead of being erased by QuadriFlow's quad size
+    bm = bmesh.new(); bmesh.ops.create_uvsphere(bm, u_segments=64, v_segments=32, radius=1.0)
+    for i in range(5):
+        r = bmesh.ops.create_cube(bm, size=0.05)
+        bmesh.ops.translate(bm, verts=r["verts"], vec=Vector((1.5 + i * 0.2, 0, 0)))
+    pp = mk("Parts", bm)
+    n, note = topo.retopologize(bpy.context, pp, 0.5, False, 1e-4)
+    far = sum(1 for v in n.data.vertices if v.co.x > 1.4)
+    check("retopo per part: small parts kept", far == 5 * 8 and "5 small part(s) kept" in note, f"{far} verts, {note}")
+    check("retopo per part: no temp objects/meshes left",
+          not [d for d in (*bpy.data.objects, *bpy.data.meshes) if d.name.startswith("_AssetValidator")])
 
     # protected weight no longer hard-blocks collapse
     bm = bmesh.new(); uv = bm.loops.layers.uv.new()
