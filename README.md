@@ -213,6 +213,18 @@ For IntelliSense on `bpy` and `bmesh`:
 pip install fake-bpy-module-4.3
 ```
 
+### Tests
+
+`tests/check_*.py` build their own scenes and run headless in Blender (validation and export, LODs, topology, review regressions). From the repo root:
+
+```powershell
+.\tests\run.ps1                      # all checks
+.\tests\run.ps1 check_topology       # just one
+.\tests\run.ps1 -Blender "C:\path\to\blender.exe"
+```
+
+Blender is found via `-Blender`, `$env:BLENDER`, `blender` on PATH, or the Microsoft Store install. Results go to `tests/_out/`; the script exits 1 if any check fails or doesn't finish.
+
 ---
 
 ## License
