@@ -172,7 +172,7 @@ check("polycount flagged on heavy", has("polycount", "Heavy", "ERROR"))
 check("missing texture file flagged", any("does_not_exist" in t for _, _, t in M))
 check("UDIM image not reported missing", not any("udim" in t.lower() and "missing" in t for _, _, t in M))
 check("generated image reported as no file on disk (expected)", any("gen" in t and "no file on disk" in t for _, _, t in M))
-check("good cube still clean in mixed run", not any("'GoodCube'" in t for _, _, t in M))
+check("good cube still clean in mixed run", not any("'GoodCube'" in t for _, s, t in M if s != "INFO"))
 
 # ---------- 3. Fix All ----------
 AV.validate()

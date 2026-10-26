@@ -51,13 +51,17 @@ def get_validation_objects(config: dict[str, Any]) -> list[bpy.types.Object]:
 def run_validation(
     config: dict[str, Any],
     objects: list[bpy.types.Object] | None = None,
+    checks: set[str] | None = None,
 ) -> list[CheckResult]:
+    """`checks`: names of the check functions to run (a guided step's), None for all."""
     if objects is None:
         objects = get_validation_objects(config)
 
     results: list[CheckResult] = []
 
     for check in get_checks():
+        if checks is not None and check.__name__ not in checks:
+            continue
         try:
             results.extend(check(objects, config))
         except Exception as e:
@@ -73,9 +77,10 @@ def run_validation(
 def validate_and_store(
     config: dict[str, Any],
     objects: list[bpy.types.Object] | None = None,
+    checks: set[str] | None = None,
 ) -> list[CheckResult]:
-    """Run all checks, persist the results for the panel, and print the report."""
-    results = run_validation(config, objects)
+    """Run the checks, persist the results for the panel, and print the report."""
+    results = run_validation(config, objects, checks)
     set_results(results)
     generate_report(results)
     return results

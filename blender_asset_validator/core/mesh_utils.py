@@ -1,3 +1,4 @@
+import bmesh
 import bpy
 
 
@@ -19,3 +20,32 @@ def bake_mesh(obj: bpy.types.Object) -> bpy.types.Mesh:
     return bpy.data.meshes.new_from_object(
         obj.evaluated_get(depsgraph), preserve_all_data_layers=True, depsgraph=depsgraph
     )
+
+
+def select_in_edit_mode(obj: bpy.types.Object, mode: str, indices) -> None:
+    """Open obj (made active) in Edit Mode with just these elements selected.
+    mode: VERT, EDGE or FACE (what `indices` index). The object selection is
+    kept, since it's the validation set; the other selected meshes enter Edit
+    Mode too, with nothing selected in them."""
+    context = bpy.context
+    obj.hide_set(False)
+    obj.select_set(True)
+    context.view_layer.objects.active = obj
+
+    for other in {o.data for o in context.selected_objects if o.type == "MESH"}:
+        bm = bmesh.new()
+        bm.from_mesh(other)
+        for seq in (bm.verts, bm.edges, bm.faces):
+            for elem in seq:
+                elem.select = False
+        if other is obj.data:
+            seq = {"VERT": bm.verts, "EDGE": bm.edges, "FACE": bm.faces}[mode]
+            seq.ensure_lookup_table()
+            for i in indices:
+                if i < len(seq):
+                    seq[i].select_set(True)  # also selects its vertices/edges, as Edit Mode expects
+        bm.to_mesh(other)
+        bm.free()
+
+    context.tool_settings.mesh_select_mode = (mode == "VERT", mode == "EDGE", mode == "FACE")
+    bpy.ops.object.mode_set(mode="EDIT")

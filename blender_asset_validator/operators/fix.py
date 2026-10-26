@@ -3,6 +3,7 @@ import bpy
 from . import ObjectModeOnly
 from ..core.engine import load_config, validate_and_store
 from ..core.state import get_results
+from ..core.steps import step_checks
 from ..ui.redraw import redraw_view3d
 
 _STALE = "Scene changed since validation (undo or deleted object) — re-run Validate"
@@ -33,10 +34,33 @@ class ASSET_VALIDATOR_OT_fix_result(ObjectModeOnly, bpy.types.Operator):
             self.report({"ERROR"}, _STALE)
             return {"CANCELLED"}
 
-        validate_and_store(load_config())
+        validate_and_store(load_config(), checks=step_checks(context.scene))
         redraw_view3d(context)
 
         self.report({"INFO"}, message or "Fix applied")
+        return {"FINISHED"}
+
+
+class ASSET_VALIDATOR_OT_select_result(bpy.types.Operator):
+    bl_idname = "asset_validator.select_result"
+    bl_label = "Show"
+    bl_description = "Open the object in Edit Mode with the offending elements selected"
+    bl_options = {"REGISTER", "UNDO"}
+
+    result_index: bpy.props.IntProperty()
+
+    def execute(self, context):
+        results = get_results()
+        if not results or self.result_index >= len(results) or results[self.result_index].select is None:
+            self.report({"ERROR"}, "Result no longer available — re-run Validate")
+            return {"CANCELLED"}
+        if context.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")  # flushes Edit Mode changes before reading the mesh
+        try:
+            results[self.result_index].select()
+        except ReferenceError:
+            self.report({"ERROR"}, _STALE)
+            return {"CANCELLED"}
         return {"FINISHED"}
 
 
@@ -64,7 +88,7 @@ class ASSET_VALIDATOR_OT_fix_all(ObjectModeOnly, bpy.types.Operator):
             except ReferenceError:
                 stale += 1
 
-        validate_and_store(load_config())
+        validate_and_store(load_config(), checks=step_checks(context.scene))
         redraw_view3d(context)
 
         if stale:

@@ -12,7 +12,10 @@ from ..core.mesh_utils import bake_mesh
 _UV_EPSILON = 1e-5
 _MAX_DISSOLVE_PASSES = 32
 _MIN_PART_FACES = 200  # smaller loose parts are kept as they are: QuadriFlow erases them
-_MAX_REMESH_TRIS = 100_000  # QuadriFlow crashes Blender on inputs much denser than this
+# Measured on a 238k-tri skeleton: 200k quads in ~6 min, no crash. Fewer quads lose thin bones
+_MAX_REMESH_TRIS = 300_000  # denser inputs are decimated first: memory and time grow with them
+_MAX_QUADS = 200_000
+_MIN_TARGET_SHARE = 0.5  # fewer quads than this share of the target: QuadriFlow folded a thin part away
 
 
 def topology_settings(config: dict) -> dict:
@@ -97,8 +100,8 @@ def retopologize(context, obj: bpy.types.Object, ratio: float, symmetry: bool, m
 
     total_tris = max(sum(len(f.verts) - 2 for f in bm.faces), 1)  # after the repair: splits the target between parts
     # Mirroring a part that sits on one side of X would erase it: symmetric runs stay whole
-    parts = [list(bm.faces)] if symmetry else _loose_parts(bm)
-    kept, remeshed, failed, capped = [], [], 0, False
+    parts = [list(bm.faces)] if symmetry else loose_parts(bm)
+    kept, remeshed, failed, collapsed, capped, restored = [], [], 0, [], False, 0
     out = bmesh.new()
     try:
         for part in parts:
@@ -106,15 +109,25 @@ def retopologize(context, obj: bpy.types.Object, ratio: float, symmetry: bool, m
                 kept.extend(part)  # QuadriFlow's uniform quad size would erase it
                 continue
             faces = max(8, round(target_faces * sum(len(f.verts) - 2 for f in part) / total_tris))
-            capped |= faces > _MAX_REMESH_TRIS // 2
-            result = _quadriflow(context, _part_mesh(bm, part), min(faces, _MAX_REMESH_TRIS // 2), symmetry)
-            if result is None:
+            capped |= faces > _MAX_QUADS
+            faces = min(faces, _MAX_QUADS)
+            result = _quadriflow(context, _part_mesh(bm, part), faces, symmetry)
+            if result is not None and len(result.polygons) < faces * _MIN_TARGET_SHARE:
+                collapsed.append(f"{len(result.polygons)} of {faces}")  # thin piece folded onto itself
+                bpy.data.meshes.remove(result)
+                kept.extend(part)
+            elif result is None:
                 failed += 1
                 kept.extend(part)
             else:
+                lost = _patch_lost_surface(result, part)
+                restored += len(lost)
+                kept.extend(lost)
                 remeshed.append(result)
         if not remeshed:
             raise RuntimeError(
+                f"QuadriFlow collapsed the mesh ({collapsed[0]} quads) — raise the Triangle Ratio"
+                if collapsed else
                 "QuadriFlow failed: " + ", ".join(problems)
                 + " (Edit Mode > Select > All by Trait > Non Manifold)"
                 if problems else
@@ -157,17 +170,21 @@ def retopologize(context, obj: bpy.types.Object, ratio: float, symmetry: bool, m
         transfer_normals(new.data, obj)
 
     notes = [f"{len(new_mesh.polygons):,} faces from {len(remeshed)} part(s)"]
-    small = len(parts) - len(remeshed) - failed
+    small = len(parts) - len(remeshed) - failed - len(collapsed)
     if small:
         notes.append(f"{small} small part(s) kept as they were")
     if failed:
         notes.append(f"{failed} part(s) QuadriFlow failed on kept as they were")
+    if collapsed:
+        notes.append(f"{len(collapsed)} thin part(s) QuadriFlow collapsed kept as they were ({', '.join(collapsed)} quads)")
+    if restored:
+        notes.append(f"{restored:,} original face(s) kept where QuadriFlow lost thin detail")
     if capped:
-        notes.append(f"capped at {_MAX_REMESH_TRIS // 2:,} quads per part (QuadriFlow crashes above that)")
+        notes.append(f"capped at {_MAX_QUADS:,} quads per part")
     return new, ", ".join(notes)
 
 
-def _loose_parts(bm) -> list:
+def loose_parts(bm) -> list:
     """Faces of bm grouped by connected piece, largest first."""
     seen, parts = set(), []
     for face in bm.faces:
@@ -185,6 +202,20 @@ def _loose_parts(bm) -> list:
                         stack.append(g)
         parts.append(part)
     return sorted(parts, key=len, reverse=True)
+
+
+def _patch_lost_surface(result: bpy.types.Mesh, part) -> list:
+    """Faces of `part` the result no longer covers, to be kept as they are:
+    QuadriFlow uses one quad size for the whole part, so bones or fins thinner
+    than a couple of quads vanish. Tolerance: one average quad edge, well above
+    how far a faithful quad strays from the surface. Nothing is deleted from the
+    result: cutting off faces that drift on thin bones tore holes in it."""
+    verts = [v.co.copy() for v in result.vertices]
+    if not result.edges:
+        return []
+    edge = sum((verts[e.vertices[0]] - verts[e.vertices[1]]).length for e in result.edges) / len(result.edges)
+    remeshed = BVHTree.FromPolygons(verts, [tuple(p.vertices) for p in result.polygons])
+    return [f for f in part if remeshed.find_nearest(f.calc_center_median(), edge)[0] is None]
 
 
 def _part_mesh(bm, faces) -> bpy.types.Mesh:

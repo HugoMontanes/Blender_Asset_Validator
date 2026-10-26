@@ -17,4 +17,5 @@ class CheckResult:
     fix_hint: Optional[str] = None
     check_name: str = ""
     fix: Optional[Callable[[], Optional[str]]] = None
+    select: Optional[Callable[[], None]] = None  # opens the object in Edit Mode with the culprits selected
 

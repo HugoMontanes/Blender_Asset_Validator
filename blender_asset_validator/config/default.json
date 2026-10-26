@@ -8,6 +8,9 @@
     "allow_ngons": false,
     "check_uvs": true,
     "check_degenerate_faces": true,
+    "check_normals": true,
+    "check_manifold": true,
+    "check_shading": true,
     "degenerate_face_area_epsilon": 1e-10
   },
   "optimization": {
@@ -21,6 +24,7 @@
     "max_pole_valence": 5,
     "pole_curvature_angle": 10.0,
     "min_triangle_quality": 0.1,
+    "max_quad_warp": 10.0,
     "flat_angle": 1.0,
     "feature_angle": 30.0,
     "quad_angle": 40.0,

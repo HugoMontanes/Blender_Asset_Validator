@@ -1,11 +1,14 @@
 import math
+from functools import partial
 from typing import List
 
 import bmesh
 import bpy
 
+from ..core.mesh_utils import select_in_edit_mode
 from ..core.registry import register_check
 from ..core.result import CheckResult, Severity
+from ..operations.cleanup import triangulate_faces
 
 _QUAD_DOMINANT = 0.5  # below this share of quads, poles are meaningless (every triangulated vert is one)
 
@@ -47,6 +50,42 @@ def check_topology(objects: List[bpy.types.Object], config: dict) -> List[CheckR
             ))
 
     return results
+
+
+@register_check
+def check_quad_planarity(objects: List[bpy.types.Object], config: dict) -> List[CheckResult]:
+    """Warped quads: the engine splits them along whichever diagonal it likes, and
+    if that's not the one the baker used the normal map shows a seam across the face."""
+    results = []
+    cfg = config.get("topology", {})
+    max_warp = math.radians(cfg.get("max_quad_warp", 10.0))
+    if not cfg.get("check_topology", True):
+        return results
+
+    for obj in objects:
+        mesh = obj.data
+        co = [v.co for v in mesh.vertices]
+        warped = [p.index for p in mesh.polygons if len(p.vertices) == 4 and quad_warp(*(co[i] for i in p.vertices)) > max_warp]
+        if warped:
+            results.append(CheckResult(
+                severity=Severity.WARNING,
+                message=f"'{obj.name}' has {len(warped)} warped quad(s) (bent >{cfg.get('max_quad_warp', 10.0):g}°)",
+                object_name=obj.name,
+                fix_hint="Triangulate them yourself so engine and baker split them the same way",
+                check_name="topology",
+                fix=partial(triangulate_faces, obj, warped),
+                select=partial(select_in_edit_mode, obj, "FACE", warped),
+            ))
+
+    return results
+
+
+def quad_warp(a, b, c, d) -> float:
+    """Angle between the two triangles of quad abcd, split on its flatter diagonal (0 = planar)."""
+    def fold(p, q, r, s):  # triangles pqr and prs share diagonal pr
+        n1, n2 = (q - p).cross(r - p), (r - p).cross(s - p)
+        return n1.angle(n2, 0.0) if n1.length and n2.length else 0.0
+    return min(fold(a, b, c, d), fold(b, c, d, a))
 
 
 def topology_stats(bm, max_valence: int, curve_angle: float, min_quality: float, hard_angle: float) -> dict:
