@@ -135,7 +135,7 @@ try:
     for f in bm.faces: f.material_index = 0 if f.calc_center_median().z >= 0 else 1
     rs = obj_from_bm("Rsphere", bm, mats=2, smooth=True)
     s_rs = topo.Surface(rs.data); n0 = tris(rs)
-    new, _ = topo.retopologize(bpy.context, rs, 0.5, False, 1e-4)
+    new, _ = topo.retopologize(rs, 0.5, False, 1e-4)
     say(f"   retopo: {n0} tris -> {len(new.data.polygons)} faces, {quad_pct(new)}% quads")
     check("retopo: all quads", quad_pct(new) == 100)
     check("retopo: face count near target", abs(tris(new) - n0 * 0.5) < n0 * 0.5 * 0.3, f"{tris(new)} tris vs {n0*0.5:.0f}")
@@ -156,20 +156,45 @@ try:
     bmesh.ops.translate(bm, verts=r2["verts"], vec=(6, 0, 0))
     parts3 = obj_from_bm("ThreeParts", bm, smooth=True)
     meshes_before, objects_before = len(bpy.data.meshes), len(bpy.data.objects)
-    steps = topo.retopologize_steps(bpy.context, parts3, 0.5, False, 1e-4)
+    steps = topo.retopologize_steps(parts3, 0.5, False, 1e-4)
     first = next(steps)
+    next(steps)  # the worker is now remeshing the first part
+    remesher = steps.gi_frame.f_locals["remesher"]
+    worker, folder = remesher._proc, remesher._dir
     steps.close()
     check("steps: progress counts the parts QuadriFlow runs on", first == (0, 2), str(first))
     check("steps: cancelling leaves no temporary data", (len(bpy.data.meshes), len(bpy.data.objects)) == (meshes_before, objects_before),
           f"{len(bpy.data.meshes) - meshes_before} meshes, {len(bpy.data.objects) - objects_before} objects left")
-    steps = topo.retopologize_steps(bpy.context, parts3, 0.5, False, 1e-4)
+    check("steps: cancelling mid-part kills the QuadriFlow worker", worker is not None and worker.poll() is not None and not os.path.exists(folder))
+    steps = topo.retopologize_steps(parts3, 0.5, False, 1e-4)
     seen = []
     try:
         while True:
             seen.append(next(steps))
     except StopIteration as end:
         done_obj = end.value[0]
-    check("steps: one step per part, then the rebuild", seen == [(0, 2), (1, 2), (2, 2)] and done_obj.name == "ThreeParts_Retopo", str(seen))
+    check("steps: each part in turn, then the rebuild", seen == sorted(seen) and list(dict.fromkeys(seen)) == [(0, 2), (1, 2), (2, 2)]
+          and done_obj.name == "ThreeParts_Retopo", str(list(dict.fromkeys(seen))))
+    limit = topo._time_limit
+    topo._time_limit = lambda *_: -60.0  # as if QuadriFlow never returned (beats the worker's startup allowance)
+    try:
+        topo.retopologize(parts3, 0.5, False, 1e-4); msg = "no error"
+    except RuntimeError as e:
+        msg = str(e)
+    topo._time_limit = limit
+    check("steps: a part past its time limit is given up, not waited on", "in time" in msg, msg)
+    bm = new_bm()
+    for x in (0, 3, 6):
+        bmesh.ops.translate(bm, verts=bmesh.ops.create_uvsphere(bm, u_segments=32, v_segments=16, radius=1.0)["verts"], vec=(x, 0, 0))
+    spheres = obj_from_bm("ThreeSpheres", bm)
+    worker = topo._WORKER
+    topo._WORKER = os.path.join(HERE, "no_such_worker.py")  # a worker that can't start
+    try:
+        topo.retopologize(spheres, 0.5, False, 1e-4); msg = "no error"
+    except RuntimeError as e:
+        msg = str(e)
+    topo._WORKER = worker
+    check("steps: a worker that keeps exiting is reported, not taken for QuadriFlow failing", "3 times in a row" in msg, msg)
 
     # 7. operators (non-manifold mesh: QuadriFlow must fail cleanly)
     bm = new_bm(); vs = [bm.verts.new(p) for p in [(0,0,0),(1,0,0),(0,1,0)]]; bm.faces.new(vs)  # QuadriFlow can't remesh one triangle

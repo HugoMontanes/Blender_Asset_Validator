@@ -160,37 +160,37 @@ try:
     check("all-at-once mode runs beyond the last step's checks", "shading" in {x.check_name for x in state.get_results()})
 
     # ---------- retopo: collapsed parts are kept ----------
-    orig = topo._quadriflow
-    def collapsing(ctx, mesh, target, sym):
-        res = orig(ctx, mesh, target, sym)
+    orig = topo._Remesher.run
+    def collapsing(self, *args):
+        res = yield from orig(self, *args)
         if res is not None:
             bm = bmesh.new(); bm.from_mesh(res)
             bmesh.ops.delete(bm, geom=bm.faces[: len(bm.faces) * 3 // 4], context="FACES")
             bm.to_mesh(res); bm.free()
         return res
-    topo._quadriflow = collapsing
+    topo._Remesher.run = collapsing
     bm = bmesh.new(); bmesh.ops.create_uvsphere(bm, u_segments=64, v_segments=32, radius=1.0)
     r2 = bmesh.ops.create_uvsphere(bm, u_segments=32, v_segments=16, radius=0.5)
     bmesh.ops.translate(bm, verts=r2["verts"], vec=Vector((3, 0, 0)))
     me = bpy.data.meshes.new("TwoParts"); bm.to_mesh(me); bm.free()
     tp = bpy.data.objects.new("TwoParts", me); scene.collection.objects.link(tp)
     try:
-        topo.retopologize(bpy.context, tp, 0.5, False, 1e-4)
+        topo.retopologize(tp, 0.5, False, 1e-4)
         check("retopo: all-collapsed mesh raises", False)
     except RuntimeError as e:
         check("retopo: all-collapsed mesh raises with advice", "collapsed" in str(e), str(e))
-    def losing(ctx, mesh, target, sym):  # drops a cap, like QuadriFlow erasing a thin bone
-        res = orig(ctx, mesh, target, sym)
+    def losing(self, *args):  # drops a cap, like QuadriFlow erasing a thin bone
+        res = yield from orig(self, *args)
         bm = bmesh.new(); bm.from_mesh(res)
         bmesh.ops.delete(bm, geom=[f for f in bm.faces if f.calc_center_median().x > 0.7], context="FACES")
         bm.to_mesh(res); bm.free()
         return res
-    topo._quadriflow = losing
-    lost, note = topo.retopologize(bpy.context, tp, 0.5, False, 1e-4)
+    topo._Remesher.run = losing
+    lost, note = topo.retopologize(tp, 0.5, False, 1e-4)
     check("retopo: surface QuadriFlow lost is kept from the original",
           "original face(s) kept" in note and max(v.co.x for v in lost.data.vertices) > 0.99, note)
-    topo._quadriflow = orig
-    new, note = topo.retopologize(bpy.context, tp, 0.5, False, 1e-4)
+    topo._Remesher.run = orig
+    new, note = topo.retopologize(tp, 0.5, False, 1e-4)
     check("retopo: healthy run keeps nothing extra", "collapsed" not in note and "original face" not in note, note)
 
     bav.unregister()

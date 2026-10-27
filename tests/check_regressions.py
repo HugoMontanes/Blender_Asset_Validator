@@ -42,7 +42,7 @@ try:
     sp = mk("SplitFbx", bm, smooth=True)
     for o, should_work in ((nm, True), (fl, True), (sp, True)):
         try:
-            n, note = topo.retopologize(bpy.context, o, 0.5, False, 1e-4); ok = True
+            n, note = topo.retopologize(o, 0.5, False, 1e-4); ok = True
             msg = f"{len(n.data.polygons)} quads"
         except RuntimeError as e:
             ok, msg = False, str(e)
@@ -59,7 +59,7 @@ try:
     for name, thickness, scale in (("GlassThin", 1e-4, 1.0), ("GlassCmScaled", 1e-3, 0.01)):
         g = glass(name, thickness, scale)
         try:
-            n, note = topo.retopologize(bpy.context, g, 0.5, False, 1e-4)
+            n, note = topo.retopologize(g, 0.5, False, 1e-4)
             check(f"retopo {name}: thin shell not fused by welding", len(n.data.polygons) > 0, f"{len(n.data.polygons)} quads; {note}")
         except RuntimeError as e:
             check(f"retopo {name}: thin shell not fused by welding", False, str(e)[:200])
@@ -70,7 +70,7 @@ try:
     bmesh.ops.reverse_faces(bm, faces=[g for g in dup["geom"] if isinstance(g, bmesh.types.BMFace)])
     ds = mk("DoubleSided", bm, smooth=True)
     try:
-        n, note = topo.retopologize(bpy.context, ds, 0.5, False, 1e-4)
+        n, note = topo.retopologize(ds, 0.5, False, 1e-4)
         check("retopo exact double-sided glass", len(n.data.polygons) > 0, f"{len(n.data.polygons)} quads")
     except RuntimeError as e:
         check("retopo exact double-sided glass", False, str(e)[:200])
@@ -83,7 +83,7 @@ try:
         r = bmesh.ops.create_cube(bm, size=0.05)
         bmesh.ops.translate(bm, verts=r["verts"], vec=Vector((1.5 + i * 0.2, 0, 0)))
     pp = mk("Parts", bm)
-    n, note = topo.retopologize(bpy.context, pp, 0.5, False, 1e-4)
+    n, note = topo.retopologize(pp, 0.5, False, 1e-4)
     far = sum(1 for v in n.data.vertices if v.co.x > 1.4)
     check("retopo per part: small parts kept", far == 5 * 8 and "5 small part(s) kept" in note, f"{far} verts, {note}")
     check("retopo per part: no temp objects/meshes left",

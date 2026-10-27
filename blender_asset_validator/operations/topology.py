@@ -1,8 +1,16 @@
+import json
 import math
+import os
+import shutil
+import subprocess
+import tempfile
+import time
+from pathlib import Path
 from typing import Optional
 
 import bmesh
 import bpy
+import numpy as np
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 from mathutils.geometry import barycentric_transform
@@ -13,8 +21,8 @@ _UV_EPSILON = 1e-5
 _MAX_DISSOLVE_PASSES = 32
 _MIN_PART_FACES = 200  # smaller loose parts are kept as they are: QuadriFlow erases them
 # Measured on a 238k-tri skeleton: 200k quads in ~6 min, no crash. Fewer quads lose thin bones
-_MAX_REMESH_TRIS = 300_000  # denser inputs are decimated first: memory and time grow with them
 _MAX_QUADS = 200_000
+_WORKER = Path(__file__).with_name("remesh_worker.py")
 _MIN_TARGET_SHARE = 0.5  # fewer quads than this share of the target: QuadriFlow folded a thin part away
 
 
@@ -81,24 +89,25 @@ def clean_bmesh(bm: bmesh.types.BMesh, surface: "Surface", cfg: dict, relax: boo
         _relax(bm, surface, cfg)
 
 
-def retopologize(context, obj: bpy.types.Object, ratio: float, symmetry: bool, merge_distance: float):
+def retopologize(obj: bpy.types.Object, ratio: float, symmetry: bool, merge_distance: float):
     """(new object, note): quads built by QuadriFlow from obj's evaluated mesh,
     one loose part at a time, with materials, UVs and normals resampled from the
-    original. Parts too small for QuadriFlow, or that it fails on, keep their
-    original faces. `merge_distance` is in world units. Raises RuntimeError
-    if no part could be remeshed."""
-    steps = retopologize_steps(context, obj, ratio, symmetry, merge_distance)
+    original. Parts too small for QuadriFlow, or that it fails on or doesn't finish
+    in time, keep their original faces. `merge_distance` is in world units. Raises
+    RuntimeError if no part could be remeshed."""
+    steps = retopologize_steps(obj, ratio, symmetry, merge_distance)
     try:
         while True:
             next(steps)
+            time.sleep(0.01)  # mostly waiting on the worker
     except StopIteration as end:
         return end.value
 
 
-def retopologize_steps(context, obj: bpy.types.Object, ratio: float, symmetry: bool, merge_distance: float):
-    """retopologize() one QuadriFlow run at a time, so the UI can show progress
-    and cancel between them: yields (parts done, parts to remesh), returns
-    (new object, note). close() it to cancel; nothing is left behind."""
+def retopologize_steps(obj: bpy.types.Object, ratio: float, symmetry: bool, merge_distance: float):
+    """retopologize() a little at a time, so the UI stays live while QuadriFlow runs
+    in its own process: yields (parts done, parts to remesh), returns (new object,
+    note). close() it to cancel at any moment; nothing is left behind."""
     mesh = bake_mesh(obj)
     surface = Surface(mesh)
     smooth = any(p.use_smooth for p in mesh.polygons)
@@ -118,13 +127,13 @@ def retopologize_steps(context, obj: bpy.types.Object, ratio: float, symmetry: b
     kept = [f for part in parts if len(part) < _MIN_PART_FACES and len(parts) > 1 for f in part]
     remeshed, failed, collapsed, capped, restored = [], 0, [], False, 0
     out = bmesh.new()
+    remesher = _Remesher()
     try:
         for done, part in enumerate(big):
-            yield done, len(big)
-            faces = max(8, round(target_faces * sum(len(f.verts) - 2 for f in part) / total_tris))
+            faces =max(8, round(target_faces * sum(len(f.verts) - 2 for f in part) / total_tris))
             capped |= faces > _MAX_QUADS
             faces = min(faces, _MAX_QUADS)
-            result = _quadriflow(context, _shape_mesh(part), faces, symmetry)
+            result = yield from remesher.run(part, faces, symmetry, (done, len(big)))
             if result is not None and len(result.polygons) < faces * _MIN_TARGET_SHARE:
                 collapsed.append(f"{len(result.polygons)} of {faces}")  # thin piece folded onto itself
                 bpy.data.meshes.remove(result)
@@ -142,6 +151,8 @@ def retopologize_steps(context, obj: bpy.types.Object, ratio: float, symmetry: b
             raise RuntimeError(
                 f"QuadriFlow collapsed the mesh ({collapsed[0]} quads) — raise the Triangle Ratio"
                 if collapsed else
+                f"QuadriFlow didn't finish in time on {remesher.timed_out} part(s) — try another Triangle Ratio"
+                if remesher.timed_out else
                 "QuadriFlow failed: " + ", ".join(problems)
                 + " (Edit Mode > Select > All by Trait > Non Manifold)"
                 if problems else
@@ -157,6 +168,7 @@ def retopologize_steps(context, obj: bpy.types.Object, ratio: float, symmetry: b
         new_mesh = bpy.data.meshes.new(f"{obj.name}_Retopo")
         out.to_mesh(new_mesh)
     finally:
+        remesher.close()
         for result in remeshed:
             bpy.data.meshes.remove(result)
         bm.free()
@@ -187,8 +199,10 @@ def retopologize_steps(context, obj: bpy.types.Object, ratio: float, symmetry: b
     small = len(parts) - len(remeshed) - failed - len(collapsed)
     if small:
         notes.append(f"{small} small part(s) kept as they were")
-    if failed:
-        notes.append(f"{failed} part(s) QuadriFlow failed on kept as they were")
+    if failed - remesher.timed_out:
+        notes.append(f"{failed - remesher.timed_out} part(s) QuadriFlow failed on kept as they were")
+    if remesher.timed_out:
+        notes.append(f"{remesher.timed_out} part(s) QuadriFlow didn't finish in time kept as they were")
     if collapsed:
         notes.append(f"{len(collapsed)} thin part(s) QuadriFlow collapsed kept as they were ({', '.join(collapsed)} quads)")
     if restored:
@@ -232,16 +246,90 @@ def _patch_lost_surface(result: bpy.types.Mesh, part) -> list:
     return [f for f in part if remeshed.find_nearest(f.calc_center_median(), edge)[0] is None]
 
 
-def _shape_mesh(faces) -> bpy.types.Mesh:
-    """New mesh with just the shape of `faces`: QuadriFlow's input, whose UVs and
-    materials come back from the Surface. Built from the part alone: copying the
-    whole bmesh per part cost 0.1-0.2 s each on a car with 145 big parts."""
-    index, polys = {}, []
-    for face in faces:
-        polys.append([index.setdefault(v, len(index)) for v in face.verts])
-    mesh = bpy.data.meshes.new("_AssetValidator_part")
-    mesh.from_pydata([v.co[:] for v in index], [], polys)  # dicts keep insertion order: the indices match
-    return mesh
+def _time_limit(target_faces: int, tris: int) -> float:
+    # ponytail: a budget by size. Healthy parts took up to 6 s for 300 quads and a 238k-tri
+    # skeleton ~6 min for 200k; a part past it keeps its faces. A setting if assets need longer
+    return 15 + target_faces / 300 + tris / 20_000  # tris: the worker decimates huge inputs first
+
+
+class _Remesher:
+    """QuadriFlow in a background Blender (remesh_worker.py), one part at a time. On some
+    inputs it never returns (a car after Merge by Distance at 0.1 mm): a process can be
+    killed at a time limit, an in-process call froze Blender for good. Esc stops it anytime."""
+
+    def __init__(self):
+        self._proc, self._dir, self._jobs, self._crashes, self.timed_out = None, None, 0, 0, 0
+
+    def run(self, faces, target_faces: int, symmetry: bool, progress):
+        """Generator: yields `progress` while QuadriFlow works; returns the new mesh,
+        or None if it failed or ran out of time."""
+        budget =_time_limit(target_faces, sum(len(f.verts) - 2 for f in faces))
+        if self._proc is None or self._proc.poll() is not None:
+            self._dir = self._dir or tempfile.mkdtemp(prefix="asset_validator_")
+            try:
+                self._proc = subprocess.Popen(
+                    [bpy.app.binary_path, "-b", "--factory-startup", "--python", str(_WORKER)],
+                    stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, text=True,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                )
+            except OSError as e:
+                raise RuntimeError(f"Couldn't start a background Blender for QuadriFlow: {e}") from e
+            budget += 10  # its own startup: ~4 s here
+        self._jobs += 1
+        src, dst = (os.path.join(self._dir, f"{self._jobs}_{kind}.npz") for kind in ("in", "out"))
+        # In the mesh's own order: fed the same part in another order, QuadriFlow never returned
+        faces = sorted(faces, key=lambda f: f.index)
+        verts = sorted({v for f in faces for v in f.verts}, key=lambda v: v.index)
+        index = {v: i for i, v in enumerate(verts)}
+        np.savez(src, co=np.array([v.co[:] for v in verts], np.float32), sizes=np.array([len(f.verts) for f in faces]),
+                 corners=np.array([index[v] for f in faces for v in f.verts]))
+        try:
+            self._proc.stdin.write(json.dumps({"in": src, "out": dst, "faces": target_faces, "symmetry": symmetry}) + "\n")
+            self._proc.stdin.flush()
+        except OSError:  # the worker died since the last part
+            return self._crashed()
+        deadline = time.monotonic() + budget
+        while True:
+            try:
+                with np.load(dst) as data:
+                    co, quads = data["co"], data["quads"]
+                break
+            except (FileNotFoundError, PermissionError):  # not there yet; on Windows an antivirus may hold it a moment
+                pass
+            if self._proc.poll() is not None:  # crashed on this part
+                return self._crashed()
+            if time.monotonic() > deadline:
+                self._kill()
+                self.timed_out += 1
+                return None
+            yield progress
+        self._crashes = 0
+        if not len(quads):
+            return None
+        mesh = bpy.data.meshes.new("_AssetValidator_part")
+        mesh.from_pydata(co.tolist(), [], quads.tolist())
+        return mesh
+
+    def close(self):
+        self._kill()
+        if self._dir:
+            shutil.rmtree(self._dir, ignore_errors=True)
+
+    def _crashed(self):
+        """The part fails; a worker that keeps exiting is broken itself, not QuadriFlow on the input."""
+        self._kill()
+        self._crashes += 1
+        if self._crashes >= 3:
+            raise RuntimeError("QuadriFlow's background Blender exited 3 times in a row — run Blender from a console to see why")
+        return None
+
+    def _kill(self):
+        # ponytail: a worker stuck in QuadriFlow outlives a parent that is killed (not closed)
+        # mid-part; tie it with a Windows job object / PR_SET_PDEATHSIG if that shows up
+        if self._proc is not None:
+            self._proc.kill()
+            self._proc.wait()
+            self._proc = None
 
 
 def _part_mesh(bm, faces) -> bpy.types.Mesh:
@@ -255,40 +343,6 @@ def _part_mesh(bm, faces) -> bpy.types.Mesh:
     part.to_mesh(mesh)
     part.free()
     return mesh
-
-
-def _quadriflow(context, mesh: bpy.types.Mesh, target_faces: int, symmetry: bool) -> Optional[bpy.types.Mesh]:
-    """`mesh` remeshed in place into quads (pre-decimated if too dense for QuadriFlow),
-    or None after freeing it. The caller resamples it onto the original surface."""
-    tmp = bpy.data.objects.new("_AssetValidator_retopo_tmp", mesh)
-    context.scene.collection.objects.link(tmp)
-    try:
-        tris = sum(len(p.vertices) - 2 for p in mesh.polygons)
-        if tris > _MAX_REMESH_TRIS:
-            # shortcut: only the input is thinned — detail finer than the cap's edge length is lost
-            tmp.modifiers.new("cap", "DECIMATE").ratio = _MAX_REMESH_TRIS / tris
-            tmp.data = bake_mesh(tmp)
-            tmp.modifiers.clear()
-            bpy.data.meshes.remove(mesh)
-        before = (len(tmp.data.vertices), len(tmp.data.polygons))
-        try:
-            with context.temp_override(object=tmp, active_object=tmp, selected_objects=[tmp], selected_editable_objects=[tmp]):
-                bpy.ops.object.quadriflow_remesh(
-                    mode="FACES", target_faces=target_faces, use_mesh_symmetry=symmetry,
-                    use_preserve_sharp=True, use_preserve_boundary=True, smooth_normals=False, seed=0,
-                )
-            # QuadriFlow reports most failures only to the UI and leaves the mesh untouched
-            polys = tmp.data.polygons
-            ok = polys and (len(tmp.data.vertices), len(polys)) != before and all(len(p.vertices) == 4 for p in polys)
-        except RuntimeError:
-            ok = False
-        result = tmp.data
-    finally:
-        bpy.data.objects.remove(tmp)
-    if ok:
-        return result
-    bpy.data.meshes.remove(result)
-    return None
 
 
 def _repair_for_quadriflow(mesh: bpy.types.Mesh, merge_distance: float) -> list:

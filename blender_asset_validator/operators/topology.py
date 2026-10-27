@@ -1,3 +1,5 @@
+import time
+
 import bpy
 
 from . import ObjectModeOnly
@@ -5,6 +7,9 @@ from ..core.engine import load_config
 from ..core.state import clear_results
 from ..operations.topology import clean_topology, retopologize_steps
 from ..ui.redraw import redraw_view3d
+
+
+_NAVIGATION = {"MIDDLEMOUSE", "WHEELUPMOUSE", "WHEELDOWNMOUSE", "TRACKPADPAN", "TRACKPADZOOM", "NDOF_MOTION", "MOUSEMOVE"}
 
 
 def _selected_meshes(context):
@@ -47,7 +52,7 @@ class ASSET_VALIDATOR_OT_retopologize(ObjectModeOnly, bpy.types.Operator):
     bl_description = (
         "Build a new all-quads '<name>_Retopo' object whose edge flow follows the curvature (QuadriFlow), "
         "with materials, UVs and normals resampled from the original. The original is hidden. "
-        "Runs part by part with progress in the status bar; Esc cancels"
+        "QuadriFlow runs in a background Blender, part by part, with progress in the status bar; Esc cancels"
     )
     bl_options = {"REGISTER", "UNDO"}
 
@@ -58,14 +63,15 @@ class ASSET_VALIDATOR_OT_retopologize(ObjectModeOnly, bpy.types.Operator):
     use_symmetry: bpy.props.BoolProperty(name="Symmetry", description="Mirror the result on X", default=False)
 
     def invoke(self, context, event):
-        # A car is thousands of loose parts and a QuadriFlow run each: one at a time per
-        # timer tick keeps Blender responsive and shows where it is
+        # A car is thousands of loose parts and a QuadriFlow run each, in a worker process:
+        # polling it on a timer keeps Blender responsive and shows where it is
         if not self._begin(context):
             return {"CANCELLED"}
-        self._jobs = self._work(context)
-        self._timer = context.window_manager.event_timer_add(0.01, window=context.window)
+        self._jobs = self._work()
+        self._timer = context.window_manager.event_timer_add(0.02, window=context.window)
         context.window_manager.modal_handler_add(self)
-        context.workspace.status_text_set("Retopologize: preparing the mesh — Esc to cancel")
+        self._status = "Retopologize: preparing the mesh — Esc to cancel"
+        context.workspace.status_text_set(self._status)
         return {"RUNNING_MODAL"}
 
     def modal(self, context, event):
@@ -73,10 +79,15 @@ class ASSET_VALIDATOR_OT_retopologize(ObjectModeOnly, bpy.types.Operator):
             self._jobs.close()  # frees the half-done object's data; finished objects stay
             self._cancelled = True
             return self._finish(context)
+        if event.type in _NAVIGATION and not (event.ctrl or event.alt or event.oskey):  # Alt+Wheel changes frame
+            return {"PASS_THROUGH"}
         if event.type != "TIMER":
             return {"RUNNING_MODAL"}  # the scene must not change under the running job
         try:
-            context.workspace.status_text_set(next(self._jobs))
+            status = next(self._jobs)
+            if status != self._status:
+                self._status = status
+                context.workspace.status_text_set(status)
         except StopIteration:
             return self._finish(context)
         except Exception:
@@ -84,11 +95,16 @@ class ASSET_VALIDATOR_OT_retopologize(ObjectModeOnly, bpy.types.Operator):
             raise
         return {"RUNNING_MODAL"}
 
+    def cancel(self, context):  # Blender closing mid-run: the cleanup also kills the worker
+        self._jobs.close()
+        context.window_manager.event_timer_remove(self._timer)
+        context.workspace.status_text_set(None)
+
     def execute(self, context):  # scripts and the redo panel: all in one go
         if not self._begin(context):
             return {"CANCELLED"}
-        for _ in self._work(context):
-            pass
+        for _ in self._work():
+            time.sleep(0.01)  # mostly waiting on the worker
         return self._finish(context)
 
     def _begin(self, context) -> bool:
@@ -99,11 +115,11 @@ class ASSET_VALIDATOR_OT_retopologize(ObjectModeOnly, bpy.types.Operator):
         self._created, self._notes, self._failed, self._cancelled, self._timer = [], [], [], False, None
         return True
 
-    def _work(self, context):
-        """Retopologizes the objects in turn, yielding a status line between QuadriFlow runs."""
+    def _work(self):
+        """Retopologizes the objects in turn, yielding a status line while QuadriFlow runs."""
         merge_distance = load_config().get("optimization", {}).get("merge_distance", 0.0001)
         for number, obj in enumerate(self._objects, 1):
-            steps = retopologize_steps(context, obj, self.ratio, self.use_symmetry, merge_distance)
+            steps = retopologize_steps(obj, self.ratio, self.use_symmetry, merge_distance)
             try:
                 while True:
                     done, total = next(steps)
@@ -114,7 +130,7 @@ class ASSET_VALIDATOR_OT_retopologize(ObjectModeOnly, bpy.types.Operator):
                 self._created.append(new)
                 self._notes.append(f"'{obj.name}': {note}")
                 obj.hide_set(True)
-            except RuntimeError as e:
+            except (RuntimeError, OSError) as e:  # OSError: temp folder full or unwritable
                 self._failed.append(f"'{obj.name}': {str(e).strip().splitlines()[-1]}")
             finally:
                 steps.close()
