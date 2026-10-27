@@ -13,7 +13,7 @@ from mathutils import Vector
 try:
     bpy.ops.wm.read_factory_settings(use_empty=True)
     import blender_asset_validator as bav
-    from blender_asset_validator.operations import topology as topo, lod as lod_ops
+    from blender_asset_validator.operations import topology as topo, lod as lod_ops, cleanup
     from blender_asset_validator.core import engine
     bav.register(); CFG = engine.load_config()
     def mk(name, bm, smooth=False):
@@ -128,6 +128,35 @@ try:
     me = bpy.data.meshes.new("deg"); me.from_pydata([(0,0,0),(1,0,0),(2,0,0)], [], [(0,1,2)]); me.uv_layers.new()
     uv = topo.Surface(me).uv_at(Vector((0.5, 0.1, 0)), 0, 0)
     check("uv_at on zero-area tri is finite", all(math.isfinite(c) for c in uv), str(tuple(uv)))
+
+    # degenerate fix only touches the bad faces: two closed shells 0.05 mm apart (glass with
+    # thickness) stay separate instead of being welded into a non-manifold, misoriented mess
+    bm = bmesh.new(); bm.loops.layers.uv.new()
+    bmesh.ops.create_cube(bm, size=1.0)
+    inner = bmesh.ops.create_cube(bm, size=1.0)["verts"]
+    bmesh.ops.scale(bm, vec=(0.9999, 0.9999, 0.9999), verts=inner)  # 0.05 mm inside, under the 0.1 mm merge distance
+    bmesh.ops.reverse_faces(bm, faces=list({f for v in inner for f in v.link_faces}))
+    far = [bm.verts.new(p) for p in ((5, 0, 0), (6, 0, 0), (7, 0, 0))]
+    bm.faces.new(far)  # collinear: zero area
+    shells = mk("TwoShells", bm)
+    faces0 = len(shells.data.polygons)
+    msg = cleanup.fix_degenerate_faces(shells, CFG)
+    bm = bmesh.new(); bm.from_mesh(shells.data)
+    fins = sum(1 for e in bm.edges if len(e.link_faces) > 2); wrong = len(cleanup.wrong_way_faces(bm)[0])
+    used = sum(1 for v in bm.verts if v.link_faces); bm.free()
+    check("degenerate fix: only the bad face goes, shells not welded",
+          len(shells.data.polygons) == faces0 - 1 and used == 16 and not fins and not wrong,
+          f"{msg}; {faces0} -> {len(shells.data.polygons)} faces, {used} verts in faces, {fins} fins, {wrong} wrong")
+
+    # one NaN UV (broken import) must not put every triangle in one overlap-grid cell and hang Validate
+    from blender_asset_validator.checks import geometry
+    import time
+    bm = bmesh.new(); bm.loops.layers.uv.new()
+    bmesh.ops.create_grid(bm, x_segments=150, y_segments=150, size=1.0, calc_uvs=True)  # 45k tris: ~4 s without the guard
+    nan_uv = mk("NanUV", bm)
+    nan_uv.data.uv_layers.active.data[0].uv = (float("nan"), 0.0)
+    t = time.perf_counter(); geometry.check_uvs([nan_uv], CFG); elapsed = time.perf_counter() - t
+    check("UV overlap with a NaN UV stays fast", elapsed < 1.0, f"{elapsed:.2f}s")
 
     # flat_angle from config drives LOD planar dissolve too
     bm = bmesh.new(); bmesh.ops.create_uvsphere(bm, u_segments=16, v_segments=8, radius=1.0)

@@ -1,0 +1,9 @@
+{
+  "_comment": "Unreal Engine: one FBX per asset; its LODs in an FBX LOD Group, its UCX_/UBX_/USP_/UCP_ collisions and SOCKET_ empties inside",
+  "roles": {
+    "collision": "^U(CX|BX|SP|CP)_(?P<owner>.+?)(_\\d+)?$",
+    "socket": "^SOCKET_"
+  },
+  "lod": {"export_target": "unreal"},
+  "export": {"format": "fbx", "mesh_smooth_type": "FACE"}
+}

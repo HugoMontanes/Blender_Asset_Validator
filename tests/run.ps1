@@ -1,5 +1,6 @@
 # Runs every tests/check_*.py headless in Blender and summarises tests/_out/*.txt.
 # Usage: .\tests\run.ps1 [-Blender <path to blender.exe>] [check_lods ...]
+[CmdletBinding(PositionalBinding = $false)]  # a bare check name must not bind to -Blender
 param(
     [string]$Blender = $env:BLENDER,
     [Parameter(ValueFromRemainingArguments = $true)][string[]]$Only

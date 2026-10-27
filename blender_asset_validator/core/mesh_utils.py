@@ -1,5 +1,14 @@
 import bmesh
 import bpy
+import numpy as np
+
+
+def read_array(seq, attr: str, width: int = 1, dtype=np.float32) -> np.ndarray:
+    """`attr` of every item of a bpy collection (vertices, loops, polygons, UV data...)
+    as a numpy array, `width` columns per item. foreach_get is ~50x faster than a loop."""
+    arr = np.empty(len(seq) * width, dtype)
+    seq.foreach_get(attr, arr)
+    return arr.reshape(-1, width) if width > 1 else arr
 
 
 def evaluated_triangle_count(obj: bpy.types.Object) -> int:

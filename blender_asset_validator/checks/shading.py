@@ -2,8 +2,9 @@ from functools import partial
 from typing import List
 
 import bpy
+import numpy as np
 
-from ..core.mesh_utils import bake_mesh, select_in_edit_mode
+from ..core.mesh_utils import bake_mesh, read_array, select_in_edit_mode
 from ..core.registry import register_check
 from ..core.result import CheckResult, Severity
 
@@ -52,45 +53,40 @@ def check_shading(objects: List[bpy.types.Object], config: dict) -> List[CheckRe
 
 
 def shading_stats(mesh: bpy.types.Mesh) -> dict:
-    mesh.calc_loop_triangles()
-    if hasattr(mesh, "corner_normals"):
-        normals = [n.vector.copy() for n in mesh.corner_normals]
-    else:  # Blender < 4.1
-        mesh.calc_normals_split()
-        normals = [loop.normal.copy() for loop in mesh.loops]
-    uvs = [[d.uv.copy() for d in layer.data] for layer in mesh.uv_layers]
-    corner_vert = [loop.vertex_index for loop in mesh.loops]
-    corner_mat = [0] * len(mesh.loops)
-    edge_corners = {}  # edge -> corners of each face on it, as (corner at its 1st vertex, at its 2nd)
-    for poly in mesh.polygons:
-        loops = list(poly.loop_indices)
-        for i, nxt in zip(loops, loops[1:] + loops[:1]):
-            corner_mat[i] = poly.material_index
-            edge_corners.setdefault(mesh.loops[i].edge_index, []).append((i, nxt))
+    normals = read_array(mesh.corner_normals, "vector", 3)
+    uvs = [read_array(layer.data, "uv", 2) for layer in mesh.uv_layers]
+    corner_vert = read_array(mesh.loops, "vertex_index", dtype=np.int64)
+    corner_edge = read_array(mesh.loops, "edge_index", dtype=np.int64)
+    loop_start = read_array(mesh.polygons, "loop_start", dtype=np.int64)
+    loop_total = read_array(mesh.polygons, "loop_total", dtype=np.int64)
+    corner_mat = np.repeat(read_array(mesh.polygons, "material_index", dtype=np.int64), loop_total)
 
-    def snap(v):
-        return tuple(round(c / _SAME) for c in v)
+    def snap(values):
+        return np.round(values.astype(np.float64) / _SAME).astype(np.int64)
 
-    gpu_verts = {
-        (corner_vert[i], corner_mat[i], snap(normals[i]), *(snap(layer[i]) for layer in uvs))
-        for i in range(len(mesh.loops))
-    }
+    keys = np.column_stack([corner_vert, corner_mat, snap(normals), *(snap(uv) for uv in uvs)])
+    gpu_verts = len(np.unique(keys, axis=0)) if len(keys) else 0
 
-    hard_off_seam = []
-    for edge, sides in edge_corners.items():
-        if len(sides) != 2:
-            continue
-        (a0, a1), (b0, b1) = sides
-        # Match corners by vertex: flipped neighbours wind the same way, not opposite
-        pairs = ((a0, b1), (a1, b0)) if corner_vert[a0] == corner_vert[b1] else ((a0, b0), (a1, b1))
-        hard = any((normals[a] - normals[b]).length > _SAME for a, b in pairs)
-        seam = bool(uvs) and any((uvs[0][a] - uvs[0][b]).length > _SAME for a, b in pairs)
-        if hard and not seam:
-            hard_off_seam.append(edge)
+    # Corner i runs along edge corner_edge[i] to corner nxt[i]; pair the two faces of each 2-face edge
+    nxt = np.arange(len(corner_vert)) + 1
+    nxt[loop_start + loop_total - 1] = loop_start
+    two_faced = np.flatnonzero(np.bincount(corner_edge, minlength=len(mesh.edges))[corner_edge] == 2)
+    two_faced = two_faced[np.argsort(corner_edge[two_faced], kind="stable")]
+    a0, b0 = two_faced[0::2], two_faced[1::2]
+    a1, b1 = nxt[a0], nxt[b0]
+    # Match corners by vertex: flipped neighbours wind the same way, not opposite
+    opposite = corner_vert[a0] == corner_vert[b1]
+    pairs = ((a0, np.where(opposite, b1, b0)), (a1, np.where(opposite, b0, b1)))
+
+    def split(values):
+        return np.logical_or(*(np.linalg.norm(values[a] - values[b], axis=1) > _SAME for a, b in pairs))
+
+    hard = split(normals)
+    seam = split(uvs[0]) if uvs else np.zeros(len(a0), bool)
 
     return {
-        "hard_off_seam": hard_off_seam,
-        "gpu_verts": len(gpu_verts),
+        "hard_off_seam": corner_edge[a0][hard & ~seam].tolist(),
+        "gpu_verts": gpu_verts,
         "verts": len(mesh.vertices),
-        "tris": len(mesh.loop_triangles),
+        "tris": int((loop_total - 2).sum()),
     }

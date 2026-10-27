@@ -35,12 +35,15 @@
     "collection": "LODs",
     "clean_topology": false,
     "export_target": "none",
-    "export_target_description": "none | unreal (one fbx per asset with LOD siblings) | unity_godot (one fbx per LOD level)",
+    "export_target_description": "none (LODs not exported) | unreal (FBX LOD Group) | unity (Name_LOD0..n in one FBX). Set by the Engine dropdown",
     "levels": [
       {"suffix": "_LOD1", "ratio": 0.5},
       {"suffix": "_LOD2", "ratio": 0.25},
       {"suffix": "_LOD3", "ratio": 0.1}
     ]
+  },
+  "roles": {
+    "_description": "Regexes on object names. collision: meshes exported with the mesh named by its (?P<owner>...) group; socket: empties parented to an asset. Set by the Engine dropdown"
   },
   "transforms": {
     "check_location": true,
@@ -55,6 +58,8 @@
     "check_textures": true
   },
   "export": {
+    "format": "fbx",
+    "format_description": "fbx | gltf (.glb)",
     "path": "//exports/",
     "axis_forward": "X",
     "axis_up": "Y",

@@ -1,25 +1,43 @@
 import os
+from contextlib import ExitStack, contextmanager
 
 import bpy
+from mathutils import Matrix
 
 from . import ObjectModeOnly
 from ..core.engine import get_validation_objects, load_config, validate_and_store
 from ..core.result import Severity
+from ..core.roles import collisions_of, renamed_collision, role, sockets_of
+from ..operations.heatmap import clear_heatmap
 from ..operations.lod import lods_of
 
+_EXTENSIONS = {"fbx": ".fbx", "gltf": ".glb"}
+_TARGETS = ("none", "unity", "unreal")  # lod.export_target
 
-class ASSET_VALIDATOR_OT_export_fbx(ObjectModeOnly, bpy.types.Operator):
-    bl_idname = "asset_validator.export_fbx"
-    bl_label = "Export FBX"
-    bl_description = "Validate then export mesh objects as FBX files (blocked if errors exist)"
+
+class ASSET_VALIDATOR_OT_export(ObjectModeOnly, bpy.types.Operator):
+    bl_idname = "asset_validator.export"
+    bl_label = "Export"
+    bl_description = (
+        "Validate, then export each asset with its LODs, collisions and sockets laid out "
+        "the way the Engine reads them (blocked if errors exist)"
+    )
+    bl_options = {"REGISTER", "UNDO"}  # heatmaps are stripped from what gets written
 
     def execute(self, context):
         config = load_config()
         export_cfg = config.get("export", {})
-        # Selected LODs ride along with their source (with_lods), never as assets of their own
-        validation_objects = [o for o in get_validation_objects(config) if not o.get("asset_validator_lod", False)]
+        if export_cfg.get("format", "fbx") not in _EXTENSIONS:
+            self.report({"ERROR"}, f"Unknown export format '{export_cfg.get('format')}' (fbx or gltf)")
+            return {"CANCELLED"}
+        target = config.get("lod", {}).get("export_target", "none")
+        if target not in _TARGETS:
+            self.report({"ERROR"}, f"Unknown lod.export_target '{target}' ({', '.join(_TARGETS)})")
+            return {"CANCELLED"}
+        # Selected LODs and collisions ride along with their asset, never as assets of their own
+        assets = [o for o in get_validation_objects(config) if role(o, config) == "asset"]
 
-        if not validation_objects:
+        if not assets:
             self.report({"ERROR"}, "Export blocked: no mesh objects are available for export")
             return {"CANCELLED"}
 
@@ -28,8 +46,9 @@ class ASSET_VALIDATOR_OT_export_fbx(ObjectModeOnly, bpy.types.Operator):
             self.report({"ERROR"}, f"Save the .blend first — export path '{export_path}' is relative to it")
             return {"CANCELLED"}
 
-        # Gate everything that will be written, LOD meshes included
-        results = validate_and_store(config, objects=[o for obj in validation_objects for o in _with_lods(obj, config)])
+        parts = {obj: _parts(obj, config) for obj in assets}
+        # Gate everything that will be written, LODs and collisions included
+        results = validate_and_store(config, objects=[o for p in parts.values() for o in p if o.type == "MESH"])
 
         errors = [r for r in results if r.severity == Severity.ERROR]
         if errors:
@@ -39,61 +58,115 @@ class ASSET_VALIDATOR_OT_export_fbx(ObjectModeOnly, bpy.types.Operator):
         export_dir = bpy.path.abspath(export_path)
         os.makedirs(export_dir, exist_ok=True)
 
-        previous_selection = list(context.selected_objects)
-        previous_active = context.view_layer.objects.active
         try:
-            exported_paths = _export_fbx_files(context, config, validation_objects, export_dir)
-        finally:
-            _restore_selection(context, previous_selection, previous_active)
+            exported_paths = _export_files(context, config, parts, export_dir)
+        except RuntimeError as e:
+            self.report({"ERROR"}, str(e))
+            return {"FINISHED"}  # earlier assets may be written with their heatmaps stripped: keep the undo step
 
         if len(exported_paths) == 1:
             self.report({"INFO"}, f"Exported -> {exported_paths[0]}")
         else:
-            self.report({"INFO"}, f"Exported {len(exported_paths)} FBX files to {export_dir}")
+            self.report({"INFO"}, f"Exported {len(exported_paths)} files to {export_dir}")
 
         return {"FINISHED"}
 
 
-def _with_lods(obj, config):
-    return [obj] if config.get("lod", {}).get("export_target", "none") == "none" else [obj, *lods_of(obj)]
+def _parts(obj, config):
+    """obj and everything written in its file."""
+    lods = [] if config.get("lod", {}).get("export_target", "none") == "none" else lods_of(obj)
+    return [obj, *lods, *collisions_of(obj, config), *sockets_of(obj, config)]
 
 
-def _export_fbx_files(context, config, validation_objects, export_dir):
+def _export_files(context, config, parts, export_dir):
+    if not config.get("export", {}).get("individual_files", True):
+        name = _get_combined_export_name(context, config.get("export", {}), list(parts))
+        with ExitStack() as stack:
+            objects = [o for obj, p in parts.items() for o in stack.enter_context(_engine_layout(context, config, obj, p))]
+            return [_export_objects(config, objects, name, export_dir)]
+
+    paths = []
+    for obj, p in parts.items():
+        name = obj.name  # the layout may rename obj while it's written
+        with _engine_layout(context, config, obj, p) as objects:
+            paths.append(_export_objects(config, objects, name, export_dir))
+    return paths
+
+
+@contextmanager
+def _engine_layout(context, config, obj, parts):
+    """The objects to write for obj, renamed and parented the way the target engine
+    reads LODs; names and parents are put back afterwards.
+    unity: Name_LOD0..n side by side. unreal: an empty with fbx_type "LodGroup"
+    (written as an FBX LOD Group node) over Name_LOD0..n, and the UCX_ meshes
+    renamed after Name_LOD0, the mesh Unreal matches them to."""
+    target = config.get("lod", {}).get("export_target", "none")
+    lods = [p for p in parts if p.get("asset_validator_lod", False)]
+    if target == "none" or not lods:
+        yield parts
+        return
+
+    name, lod0 = obj.name, f"{obj.name}_LOD0"
+    # LODs keep the name they were generated with: the asset may have been renamed since, or the suffix differ
+    renames = [(obj, lod0), *((lod, f"{name}_LOD{level}") for level, lod in enumerate(lods, 1))]
+    if target == "unreal":
+        renames += [(c, renamed_collision(c, lod0, config)) for c in parts if role(c, config) == "collision"]
+    old_names = [(o, o.name) for o, _ in renames]
+    group, reparented = None, []
+    try:
+        for o, new in renames:
+            old = o.name
+            o.name = new
+            if o.name != new:
+                raise RuntimeError(f"Export needs to rename '{old}' to '{new}', but that name is taken")
+        if target == "unreal":
+            group = bpy.data.objects.new(name, None)  # obj gave the name up above
+            group["fbx_type"] = "LodGroup"
+            context.scene.collection.objects.link(group)
+            for o in (obj, *lods):
+                reparented.append((o, o.parent, o.matrix_parent_inverse.copy(), o.matrix_basis.copy()))
+                world = o.matrix_world.copy()
+                o.parent = group
+                o.matrix_parent_inverse = Matrix.Identity(4)
+                o.matrix_basis = world
+            context.view_layer.update()
+        yield [*parts, group] if group else parts
+    finally:
+        for o, parent, inverse, basis in reversed(reparented):
+            o.parent, o.matrix_parent_inverse, o.matrix_basis = parent, inverse, basis
+        if group is not None:
+            bpy.data.objects.remove(group)
+        for o, old in reversed(old_names):
+            o.name = old
+
+
+def _export_objects(config, objects, name, export_dir):
     export_cfg = config.get("export", {})
-    export_target = config.get("lod", {}).get("export_target", "none")
-
-    if not export_cfg.get("individual_files", True):
-        objects = [o for obj in validation_objects for o in _with_lods(obj, config)]
-        name = _get_combined_export_name(context, export_cfg, validation_objects)
-        return [_export_objects(context, export_cfg, objects, name, export_dir)]
-
-    if export_target == "unity_godot":
-        # One fbx per LOD level — the engine's LOD group is assembled after import.
-        return [
-            _export_objects(context, export_cfg, [lod_obj], lod_obj.name, export_dir)
-            for obj in validation_objects
-            for lod_obj in _with_lods(obj, config)
-        ]
-
-    # "unreal": base + its _LODn siblings in ONE fbx — Unreal auto-detects LODs
-    # from that naming convention. "none": _with_lods() is just the object.
-    return [
-        _export_objects(context, export_cfg, _with_lods(obj, config), obj.name, export_dir)
-        for obj in validation_objects
-    ]
-
-
-def _export_objects(context, export_cfg, objects, name, export_dir):
-    _select_only_objects(context, objects)
-    fbx_path = os.path.join(export_dir, f"{_sanitize_export_name(name)}.fbx")
-    bpy.ops.export_scene.fbx(filepath=fbx_path, **_build_export_kwargs(export_cfg))
-    return fbx_path
+    fmt = export_cfg.get("format", "fbx")
+    for obj in objects:
+        if obj.type == "MESH":
+            clear_heatmap(obj)
+    path = os.path.join(export_dir, f"{_sanitize_export_name(name)}{_EXTENSIONS[fmt]}")
+    # Written from a temporary collection, not the selection: exporters skip hidden
+    # selected objects, and collisions and LODs usually are hidden
+    bundle = bpy.data.collections.new("_AssetValidator_export")
+    try:
+        for obj in objects:
+            bundle.objects.link(obj)
+        if fmt == "gltf":
+            bpy.ops.export_scene.gltf(
+                filepath=path, collection=bundle.name, export_format="GLB",
+                export_apply=export_cfg.get("use_mesh_modifiers", True),
+            )
+        else:
+            bpy.ops.export_scene.fbx(filepath=path, collection=bundle.name, **_build_export_kwargs(export_cfg))
+    finally:
+        bpy.data.collections.remove(bundle)
+    return path
 
 
 def _build_export_kwargs(export_cfg):
     return {
-        "use_selection": True,
-        "use_active_collection": False,
         "global_scale": export_cfg.get("global_scale", 1.0),
         "apply_unit_scale": export_cfg.get("apply_unit_scale", True),
         "apply_scale_options": export_cfg.get("apply_scale_options", "FBX_SCALE_NONE"),
@@ -123,29 +196,6 @@ def _get_combined_export_name(context, export_cfg, validation_objects):
         return active_object.name
 
     return validation_objects[0].name
-
-
-def _select_only_objects(context, objects):
-    for selected_obj in context.selected_objects:
-        selected_obj.select_set(False)
-
-    for obj in objects:
-        obj.select_set(True)
-
-    if objects:
-        context.view_layer.objects.active = objects[0]
-
-
-def _restore_selection(context, previous_selection, previous_active):
-    for selected_obj in context.selected_objects:
-        selected_obj.select_set(False)
-
-    for selected_obj in previous_selection:
-        if selected_obj.name in bpy.data.objects:
-            selected_obj.select_set(True)
-
-    if previous_active and previous_active.name in bpy.data.objects:
-        context.view_layer.objects.active = previous_active
 
 
 def _sanitize_export_name(name):

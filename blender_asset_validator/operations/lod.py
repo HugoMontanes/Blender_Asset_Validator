@@ -4,6 +4,7 @@ import bmesh
 import bpy
 
 from ..core.mesh_utils import bake_mesh
+from ..core.steps import APPROVED
 from .topology import Surface, topology_settings, transfer_normals, clean_bmesh, feature_verts
 
 _MARKER = "asset_validator_lod"
@@ -73,6 +74,7 @@ def generate_lods(objects: List[bpy.types.Object], config: dict) -> List[str]:
             lod_obj[_MARKER] = True
             lod_obj[_SOURCE] = obj  # ID pointer, survives renaming the source
             lod_obj[_LEVEL] = level_idx
+            lod_obj.pop(APPROVED, None)  # copied from the source: the decimated mesh passed no step yet
             group = lod_obj.vertex_groups.get(_PROTECT_GROUP)
             if group is not None:
                 lod_obj.vertex_groups.remove(group)

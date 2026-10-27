@@ -219,7 +219,7 @@ check("selected LODs validate on their own", AV.validate() == {"FINISHED"} and l
 
 # ---------- 7. Export ----------
 select(good)
-r = AV.export_fbx()
+r = AV.export()
 check("export blocked for unsaved blend w/ relative path", r == {"CANCELLED"}, str(r))
 
 blend = os.path.join(WORK, "t.blend")
@@ -235,7 +235,7 @@ def run_export(target, individual=True, objs=None):
     export_mod.load_config = patched
     try:
         select(*(objs or [good]))
-        r = AV.export_fbx()
+        r = AV.export()
     finally:
         export_mod.load_config = orig
     files = sorted(os.listdir(exports)) if os.path.isdir(exports) else []
@@ -247,8 +247,9 @@ check("export none -> 1 fbx", r == {"FINISHED"} and files == ["GoodCube.fbx"], f
 r, files = run_export("unreal")
 check("export unreal -> 1 fbx per asset", r == {"FINISHED"} and files == ["GoodCube.fbx"], f"{r} {files}")
 sz_none = os.path.getsize(os.path.join(exports, "GoodCube.fbx"))
-r, files = run_export("unity_godot")
-check("export unity_godot -> 1 fbx per level", files == ["GoodCube.fbx", "GoodCube_LOD1.fbx", "GoodCube_LOD2.fbx", "GoodCube_LOD3.fbx"], f"{r} {files}")
+r, files = run_export("unity")
+check("export unity -> 1 fbx per asset, LODs inside", r == {"FINISHED"} and files == ["GoodCube.fbx"], f"{r} {files}")
+check("export unity: names restored", good.name == "GoodCube" and lod_ops.lods_of(good)[0].name == "GoodCube_LOD1")
 r, files = run_export("unreal", objs=[good, *lod_ops.lods_of(good)])
 check("selected LODs not exported twice", r == {"FINISHED"} and files == ["GoodCube.fbx"], f"{r} {files}")
 lod1 = lod_ops.lods_of(good)[0]; lod1.name = "bad lod"
@@ -271,7 +272,7 @@ check("selection restored after export", bpy.context.view_layer.objects.active =
 select(good)
 bpy.ops.object.mode_set(mode="EDIT")
 check("validate polls False in Edit Mode", not AV.validate.poll())
-check("export polls False in Edit Mode", not AV.export_fbx.poll())
+check("export polls False in Edit Mode", not AV.export.poll())
 bpy.ops.object.mode_set(mode="OBJECT")
 check("validate polls True in Object Mode", AV.validate.poll())
 

@@ -18,4 +18,5 @@ class CheckResult:
     check_name: str = ""
     fix: Optional[Callable[[], Optional[str]]] = None
     select: Optional[Callable[[], None]] = None  # opens the object in Edit Mode with the culprits selected
+    waived: Optional[str] = None  # the reason, if the artist accepted this warning (core/waivers.py)
 

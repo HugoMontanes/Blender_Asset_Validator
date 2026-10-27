@@ -4,7 +4,7 @@ from . import ObjectModeOnly
 from ..core.engine import get_validation_objects, load_config, validate_and_store
 from ..core.result import Severity
 from ..core.state import clear_results
-from ..core.steps import STEPS, step_checks
+from ..core.steps import STEPS, approve_step, step_checks
 from ..ui.redraw import redraw_view3d
 
 
@@ -66,7 +66,7 @@ class ASSET_VALIDATOR_OT_approve_step(ObjectModeOnly, bpy.types.Operator):
         if any(r.severity == Severity.ERROR for r in results):
             self.report({"ERROR"}, "Fix this step's errors before approving it")
             return {"CANCELLED"}
-        scene.asset_validator_approved[scene.asset_validator_step] = True
+        approve_step(objects, scene.asset_validator_step)
         if scene.asset_validator_step + 1 < len(STEPS):
             _enter_step(context, scene.asset_validator_step + 1)
         else:

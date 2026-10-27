@@ -1,4 +1,6 @@
 import json
+import re
+import zlib
 from pathlib import Path
 from typing import Any
 
@@ -6,17 +8,26 @@ import bpy
 
 from .registry import get_checks
 from .result import CheckResult, Severity
+from .roles import role
 from .state import set_results
+from .waivers import apply_waivers
 from ..report.generator import generate_report
 
 
 _CONFIG_DIR = Path(__file__).parent.parent / "config"
 
-# Static list: Blender drops strings returned by a dynamic EnumProperty items callback.
-PRESET_ITEMS = [("NONE", "Default", "config/default.json only")] + [
-    (path.stem, path.stem.capitalize(), f"config/default.json + presets/{path.name}")
-    for path in sorted((_CONFIG_DIR / "presets").glob("*.json"))
-]
+def _profiles(folder: str, none: tuple) -> list:
+    """Static list: Blender drops strings returned by a dynamic items callback. The .blend
+    stores the item's number, so it comes from the name: adding a profile can't shift the others."""
+    return [(*none, 0)] + [
+        (path.stem, path.stem.capitalize(), f"config/{folder}/{path.name}", zlib.crc32(path.stem.encode()) & 0x7FFFFFFF)
+        for path in sorted((_CONFIG_DIR / folder).glob("*.json"))
+    ]
+
+
+ENGINE_ITEMS = _profiles("engines", ("NONE", "Custom", "config/default.json rules, no engine conventions"))
+PRESET_ITEMS = _profiles("presets", ("NONE", "Default", "No preset on top of the engine's rules"))
+PROJECT_CONFIG = "asset_validator.json"  # next to the .blend: the project's own rules, merged last
 
 
 def _read_json(path: Path) -> dict[str, Any]:
@@ -25,12 +36,30 @@ def _read_json(path: Path) -> dict[str, Any]:
 
 
 def load_config() -> dict[str, Any]:
-    """Default rules with the scene's selected preset (panel dropdown) merged on top."""
+    """default.json <- the scene's engine <- its preset (panel dropdowns) <- the
+    asset_validator.json next to the .blend, each merged on top of the last."""
     config = _read_json(_CONFIG_DIR / "default.json")
-    preset = getattr(bpy.context.scene, "asset_validator_preset", "NONE")
-    if preset != "NONE":
-        config = _merge_dicts(config, _read_json(_CONFIG_DIR / "presets" / f"{preset}.json"))
+    scene = bpy.context.scene
+    for folder, prop in (("engines", "asset_validator_engine"), ("presets", "asset_validator_preset")):
+        name = getattr(scene, prop, "NONE")
+        if name not in ("NONE", ""):  # "": saved with a profile this install doesn't have
+            config = _merge_dicts(config, _read_json(_CONFIG_DIR / folder / f"{name}.json"))
+    project = Path(bpy.path.abspath(f"//{PROJECT_CONFIG}"))
+    if bpy.data.filepath and project.exists():
+        config = _merge_dicts(config, _read_json(project))
+    _check_roles(config.get("roles", {}))
     return config
+
+
+def _check_roles(roles: dict) -> None:
+    """Raises ValueError on a role pattern that would fail at match time (hand-edited asset_validator.json)."""
+    for key in ("collision", "socket"):
+        try:
+            pattern = re.compile(roles.get(key) or "")
+        except re.error as e:
+            raise ValueError(f"roles.{key} is not a valid regex: {e}") from e
+        if key == "collision" and roles.get(key) and "owner" not in pattern.groupindex:
+            raise ValueError("roles.collision needs a (?P<owner>...) group: the name of the mesh it belongs to")
 
 
 def get_validation_objects(config: dict[str, Any]) -> list[bpy.types.Object]:
@@ -58,12 +87,16 @@ def run_validation(
         objects = get_validation_objects(config)
 
     results: list[CheckResult] = []
+    roles = {obj: role(obj, config) for obj in objects}
 
     for check in get_checks():
         if checks is not None and check.__name__ not in checks:
             continue
+        targets = [obj for obj in objects if roles[obj] in check.roles]
+        if not targets:
+            continue
         try:
-            results.extend(check(objects, config))
+            results.extend(check(targets, config))
         except Exception as e:
             results.append(CheckResult(
                 severity=Severity.ERROR,
@@ -71,6 +104,7 @@ def run_validation(
                 check_name=check.__name__,
             ))
 
+    apply_waivers(results)
     return results
 
 

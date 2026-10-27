@@ -113,6 +113,10 @@ try:
     hl = lod_ops.lods_of(half)
     check("modifier source: LOD1 relative to evaluated tris", abs(tris(hl[0]) - ev * 0.5) <= ev * 0.05, f"{tris(hl[0])} vs {ev*0.5:.0f}")
     check("modifier source: LOD has no modifiers", not hl[0].modifiers)
+    from blender_asset_validator.core.steps import APPROVED
+    half[APPROVED] = [0, 1, 2]
+    lod_ops.generate_lods([half], CFG)
+    check("LODs don't inherit the source's step approvals", APPROVED not in lod_ops.lods_of(half)[0] and list(half[APPROVED]) == [0, 1, 2])
 
     # operator path
     bpy.ops.object.select_all(action="DESELECT"); sphere.select_set(True); bpy.context.view_layer.objects.active = sphere

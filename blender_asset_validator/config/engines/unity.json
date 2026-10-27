@@ -1,0 +1,15 @@
+{
+  "_comment": "Unity: one FBX per asset with Name_LOD0..n (Unity builds the LOD Group on import). Unity has no collision naming of its own: UCX_ meshes skip the render checks and ride in their asset's FBX for an import script",
+  "roles": {
+    "collision": "^UCX_(?P<owner>.+?)(_\\d+)?$"
+  },
+  "lod": {"export_target": "unity"},
+  "export": {
+    "format": "fbx",
+    "axis_forward": "-Z",
+    "axis_up": "Y",
+    "apply_scale_options": "FBX_SCALE_ALL",
+    "bake_space_transform": true,
+    "mesh_smooth_type": "FACE"
+  }
+}

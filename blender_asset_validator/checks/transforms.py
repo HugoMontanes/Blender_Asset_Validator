@@ -6,7 +6,7 @@ from ..core.registry import register_check
 from ..core.result import CheckResult, Severity
 
 
-@register_check
+@register_check(roles=("asset", "lod", "collision"))  # a collision must sit where its mesh does
 def check_transforms(objects: List[bpy.types.Object], config: dict) -> List[CheckResult]:
     results = []
     cfg = config.get("transforms", {})

@@ -147,6 +147,30 @@ try:
     check("retopo: custom normals", new.data.has_custom_normals)
     check("retopo: name + collection", new.name == "Rsphere_Retopo" and new.users_collection == rs.users_collection)
 
+    # 6b. step by step (the modal operator): progress per part, and cancelling leaves nothing behind
+    bm = new_bm()
+    for x in (0, 3):
+        r2 = bmesh.ops.create_uvsphere(bm, u_segments=32, v_segments=16, radius=1.0, calc_uvs=True)
+        bmesh.ops.translate(bm, verts=r2["verts"], vec=(x, 0, 0))
+    r2 = bmesh.ops.create_cube(bm, size=0.2)  # 6 faces: kept as it is, not a step
+    bmesh.ops.translate(bm, verts=r2["verts"], vec=(6, 0, 0))
+    parts3 = obj_from_bm("ThreeParts", bm, smooth=True)
+    meshes_before, objects_before = len(bpy.data.meshes), len(bpy.data.objects)
+    steps = topo.retopologize_steps(bpy.context, parts3, 0.5, False, 1e-4)
+    first = next(steps)
+    steps.close()
+    check("steps: progress counts the parts QuadriFlow runs on", first == (0, 2), str(first))
+    check("steps: cancelling leaves no temporary data", (len(bpy.data.meshes), len(bpy.data.objects)) == (meshes_before, objects_before),
+          f"{len(bpy.data.meshes) - meshes_before} meshes, {len(bpy.data.objects) - objects_before} objects left")
+    steps = topo.retopologize_steps(bpy.context, parts3, 0.5, False, 1e-4)
+    seen = []
+    try:
+        while True:
+            seen.append(next(steps))
+    except StopIteration as end:
+        done_obj = end.value[0]
+    check("steps: one step per part, then the rebuild", seen == [(0, 2), (1, 2), (2, 2)] and done_obj.name == "ThreeParts_Retopo", str(seen))
+
     # 7. operators (non-manifold mesh: QuadriFlow must fail cleanly)
     bm = new_bm(); vs = [bm.verts.new(p) for p in [(0,0,0),(1,0,0),(0,1,0)]]; bm.faces.new(vs)  # QuadriFlow can't remesh one triangle
     nm = obj_from_bm("NonManifold", bm)

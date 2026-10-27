@@ -2,13 +2,18 @@ from typing import List, Optional
 
 import bpy
 import bmesh
+import numpy as np
 
+from ..core.mesh_utils import read_array
 from .topology import loose_parts, transfer_normals
 
 
 def fix_degenerate_faces(obj: bpy.types.Object, config: dict) -> Optional[str]:
-    """Fixer for check_degenerate_faces: merges duplicate vertices, dissolves
-    zero-length edges, then deletes any face still under the check's area epsilon."""
+    """Fixer for check_degenerate_faces, on the faces it reports only: merges each
+    one's coincident vertices, dissolves its zero-length edges, then deletes any
+    still under the area epsilon. Never the whole mesh: welding everything fused
+    separate parts lying closer than the merge distance (a car's glass layers)
+    into non-manifold, misoriented shells — 30 bad faces cost 615."""
     cfg = config.get("optimization", {})
     area_epsilon = config.get("geometry", {}).get("degenerate_face_area_epsilon", 1e-10)
     mesh = obj.data
@@ -17,13 +22,20 @@ def fix_degenerate_faces(obj: bpy.types.Object, config: dict) -> Optional[str]:
     bm = bmesh.new()
     bm.from_mesh(mesh)
 
+    def degenerate():
+        return [face for face in bm.faces if face.calc_area() <= area_epsilon]
+
     if cfg.get("merge_by_distance", True):
-        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=cfg.get("merge_distance", 0.0001))
+        for verts in [list(face.verts) for face in degenerate()]:  # each face with itself, not with its neighbours
+            alive = [v for v in verts if v.is_valid]  # an earlier merge may have taken some
+            if len(alive) > 1:
+                bmesh.ops.remove_doubles(bm, verts=alive, dist=cfg.get("merge_distance", 0.0001))
 
     if cfg.get("fix_degenerate_faces", True):
-        bmesh.ops.dissolve_degenerate(bm, dist=cfg.get("degenerate_merge_distance", 0.0001), edges=bm.edges)
+        edges = list({edge for face in degenerate() for edge in face.edges})
+        bmesh.ops.dissolve_degenerate(bm, dist=cfg.get("degenerate_merge_distance", 0.0001), edges=edges)
         # Collinear faces with long edges survive dissolve_degenerate but still fail the check
-        leftovers = [face for face in bm.faces if face.calc_area() <= area_epsilon]
+        leftovers = degenerate()
         if leftovers:
             bmesh.ops.delete(bm, geom=leftovers, context="FACES")
 
@@ -108,16 +120,28 @@ def delete_loose(obj: bpy.types.Object, config: dict) -> Optional[str]:
 
 def warped_quads(mesh: bpy.types.Mesh, max_warp: float) -> List[int]:
     """Indices of quads bent more than max_warp radians."""
-    co = [v.co for v in mesh.vertices]
-    return [p.index for p in mesh.polygons if len(p.vertices) == 4 and quad_warp(*(co[i] for i in p.vertices)) > max_warp]
+    quads, warp = quad_warps(mesh)
+    return quads[warp > max_warp].tolist()
 
 
-def quad_warp(a, b, c, d) -> float:
-    """Angle between the two triangles of quad abcd, split on its flatter diagonal (0 = planar)."""
-    def fold(p, q, r, s):  # triangles pqr and prs share diagonal pr
-        n1, n2 = (q - p).cross(r - p), (r - p).cross(s - p)
-        return n1.angle(n2, 0.0) if n1.length and n2.length else 0.0
-    return min(fold(a, b, c, d), fold(b, c, d, a))
+def quad_warps(mesh: bpy.types.Mesh) -> tuple:
+    """(indices of the quads, angle in radians between the two triangles of each,
+    split on its flatter diagonal: 0 = planar)."""
+    sizes = read_array(mesh.polygons, "loop_total", dtype=np.int64)
+    quads = np.flatnonzero(sizes == 4)
+    starts = read_array(mesh.polygons, "loop_start", dtype=np.int64)[quads]
+    corner_vert = read_array(mesh.loops, "vertex_index", dtype=np.int64)
+    co = read_array(mesh.vertices, "co", 3, np.float64)
+    a, b, c, d = (co[corner_vert[starts + k]] for k in range(4))
+    return quads, np.minimum(_fold(a, b, c, d), _fold(b, c, d, a))
+
+
+def _fold(p, q, r, s) -> np.ndarray:
+    """Angle between triangles pqr and prs (rows of points), which share diagonal pr; 0 where one has no area."""
+    n1, n2 = np.cross(q - p, r - p), np.cross(r - p, s - p)
+    lengths = np.linalg.norm(n1, axis=1) * np.linalg.norm(n2, axis=1)
+    cos = np.divide((n1 * n2).sum(axis=1), lengths, out=np.ones(len(p)), where=lengths > 0)
+    return np.arccos(np.clip(cos, -1.0, 1.0))
 
 
 def triangulate_warped(obj: bpy.types.Object, max_warp: float) -> Optional[str]:

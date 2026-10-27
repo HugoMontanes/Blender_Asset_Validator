@@ -14,7 +14,7 @@ try:
     bpy.ops.wm.read_factory_settings(use_empty=True)
     import blender_asset_validator as bav
     from blender_asset_validator.core import engine, state, registry
-    from blender_asset_validator.core.steps import STEPS
+    from blender_asset_validator.core.steps import STEPS, step_approved
     from blender_asset_validator.operations import topology as topo
     bav.register()
     CFG = engine.load_config()
@@ -145,11 +145,13 @@ try:
         blocked = AV.approve_step() == {"CANCELLED"}
     except RuntimeError as e:  # bpy.ops raises on a reported ERROR
         blocked = "errors" in str(e)
-    check("guided: approve blocked by errors", blocked and scene.asset_validator_step == 1 and not scene.asset_validator_approved[1])
+    check("guided: approve blocked by errors", blocked and scene.asset_validator_step == 1 and not step_approved([half2], 1))
     AV.fix_all()
     check("guided: Fix Step re-checks only the step", {x.check_name for x in state.get_results()} <= {"normals", "manifold", "geometry_cleanup"})
     r = AV.approve_step()
-    check("guided: approve marks the step and moves on", r == {"FINISHED"} and scene.asset_validator_approved[1] and scene.asset_validator_step == 2)
+    check("guided: approve marks the step and moves on", r == {"FINISHED"} and step_approved([half2], 1) and scene.asset_validator_step == 2)
+    other = mk("NotApprovedYet", sphere)
+    check("guided: approvals are per object", not step_approved([other], 1) and not step_approved([half2, other], 1))
     check("guided: next step's findings already shown", all(x.check_name in ("ngons", "topology") for x in state.get_results()))
     AV.go_to_step(index=5)
     check("guided: last step runs every check", "shading" in {x.check_name for x in state.get_results()})

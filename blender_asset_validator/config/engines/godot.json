@@ -1,0 +1,12 @@
+{
+  "_comment": "Godot 4: one .glb per asset. Godot builds its own LODs on import, so generated LODs stay out. Name-colonly / Name-convcolonly meshes are collision only and ride in Name's file; -col / -convcol meshes are regular assets",
+  "naming": {
+    "pattern": "^[A-Z][a-zA-Z0-9_]*([-$_](col|convcol|occ|navmesh|rigid|vehicle|wheel))?$",
+    "description": "PascalCase, optionally with a Godot import hint (-col, -convcol, -occ...)"
+  },
+  "roles": {
+    "collision": "(?i)^(?P<owner>.+?)[-_$](colonly|convcolonly)$"
+  },
+  "lod": {"export_target": "none"},
+  "export": {"format": "gltf"}
+}

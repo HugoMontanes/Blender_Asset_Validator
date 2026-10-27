@@ -87,6 +87,18 @@ def retopologize(context, obj: bpy.types.Object, ratio: float, symmetry: bool, m
     original. Parts too small for QuadriFlow, or that it fails on, keep their
     original faces. `merge_distance` is in world units. Raises RuntimeError
     if no part could be remeshed."""
+    steps = retopologize_steps(context, obj, ratio, symmetry, merge_distance)
+    try:
+        while True:
+            next(steps)
+    except StopIteration as end:
+        return end.value
+
+
+def retopologize_steps(context, obj: bpy.types.Object, ratio: float, symmetry: bool, merge_distance: float):
+    """retopologize() one QuadriFlow run at a time, so the UI can show progress
+    and cancel between them: yields (parts done, parts to remesh), returns
+    (new object, note). close() it to cancel; nothing is left behind."""
     mesh = bake_mesh(obj)
     surface = Surface(mesh)
     smooth = any(p.use_smooth for p in mesh.polygons)
@@ -101,17 +113,18 @@ def retopologize(context, obj: bpy.types.Object, ratio: float, symmetry: bool, m
     total_tris = max(sum(len(f.verts) - 2 for f in bm.faces), 1)  # after the repair: splits the target between parts
     # Mirroring a part that sits on one side of X would erase it: symmetric runs stay whole
     parts = [list(bm.faces)] if symmetry else loose_parts(bm)
-    kept, remeshed, failed, collapsed, capped, restored = [], [], 0, [], False, 0
+    # QuadriFlow's uniform quad size would erase small parts: they keep their faces
+    big = [part for part in parts if len(part) >= _MIN_PART_FACES or len(parts) == 1]
+    kept = [f for part in parts if len(part) < _MIN_PART_FACES and len(parts) > 1 for f in part]
+    remeshed, failed, collapsed, capped, restored = [], 0, [], False, 0
     out = bmesh.new()
     try:
-        for part in parts:
-            if len(part) < _MIN_PART_FACES and len(parts) > 1:
-                kept.extend(part)  # QuadriFlow's uniform quad size would erase it
-                continue
+        for done, part in enumerate(big):
+            yield done, len(big)
             faces = max(8, round(target_faces * sum(len(f.verts) - 2 for f in part) / total_tris))
             capped |= faces > _MAX_QUADS
             faces = min(faces, _MAX_QUADS)
-            result = _quadriflow(context, _part_mesh(bm, part), faces, symmetry)
+            result = _quadriflow(context, _shape_mesh(part), faces, symmetry)
             if result is not None and len(result.polygons) < faces * _MIN_TARGET_SHARE:
                 collapsed.append(f"{len(result.polygons)} of {faces}")  # thin piece folded onto itself
                 bpy.data.meshes.remove(result)
@@ -124,6 +137,7 @@ def retopologize(context, obj: bpy.types.Object, ratio: float, symmetry: bool, m
                 restored += len(lost)
                 kept.extend(lost)
                 remeshed.append(result)
+        yield len(big), len(big)  # all parts done: assembling and resampling still take seconds
         if not remeshed:
             raise RuntimeError(
                 f"QuadriFlow collapsed the mesh ({collapsed[0]} quads) — raise the Triangle Ratio"
@@ -218,8 +232,20 @@ def _patch_lost_surface(result: bpy.types.Mesh, part) -> list:
     return [f for f in part if remeshed.find_nearest(f.calc_center_median(), edge)[0] is None]
 
 
+def _shape_mesh(faces) -> bpy.types.Mesh:
+    """New mesh with just the shape of `faces`: QuadriFlow's input, whose UVs and
+    materials come back from the Surface. Built from the part alone: copying the
+    whole bmesh per part cost 0.1-0.2 s each on a car with 145 big parts."""
+    index, polys = {}, []
+    for face in faces:
+        polys.append([index.setdefault(v, len(index)) for v in face.verts])
+    mesh = bpy.data.meshes.new("_AssetValidator_part")
+    mesh.from_pydata([v.co[:] for v in index], [], polys)  # dicts keep insertion order: the indices match
+    return mesh
+
+
 def _part_mesh(bm, faces) -> bpy.types.Mesh:
-    """New mesh with only `faces` of bm."""
+    """New mesh with only `faces` of bm, all their data included."""
     keep = set(faces)
     part = bm.copy()
     part.faces.ensure_lookup_table()
@@ -548,13 +574,7 @@ def transfer_normals(mesh: bpy.types.Mesh, source: bpy.types.Object) -> None:
     finally:
         bpy.data.objects.remove(holder)
     try:
-        if hasattr(baked, "corner_normals"):
-            normals = [tuple(n.vector) for n in baked.corner_normals]
-        else:  # Blender < 4.1
-            baked.calc_normals_split()
-            normals = [tuple(loop.normal) for loop in baked.loops]
+        normals = [tuple(n.vector) for n in baked.corner_normals]
     finally:
         bpy.data.meshes.remove(baked)
-    if hasattr(mesh, "use_auto_smooth"):  # Blender < 4.1 needs it for custom normals
-        mesh.use_auto_smooth = True
     mesh.normals_split_custom_set(normals)

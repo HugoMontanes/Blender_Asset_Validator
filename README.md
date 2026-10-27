@@ -1,17 +1,17 @@
 [README.md](https://github.com/user-attachments/files/27019346/README.md)
 # Blender Asset Validator
 
-A Blender addon that validates 3D assets against configurable pipeline standards before exporting to FBX. Built as a Tech Artist pipeline tool for enforcing quality gates inside Blender.
+A Blender addon that validates 3D assets against configurable pipeline standards and exports them the way the target engine (Unreal, Unity, Godot) expects. Built as a Tech Artist pipeline tool for enforcing quality gates inside Blender.
 
-![Blender](https://img.shields.io/badge/Blender-4.0%2B-orange?logo=blender) ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python) ![License](https://img.shields.io/badge/license-MIT-green)
+![Blender](https://img.shields.io/badge/Blender-4.2%2B-orange?logo=blender) ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python) ![License](https://img.shields.io/badge/license-MIT-green)
 
 ---
 
 ## What it does
 
-Runs a set of checks on mesh objects and reports errors and warnings in an N-panel. Export to FBX is blocked until all errors are resolved.
+Runs a set of checks on mesh objects and reports errors and warnings in an N-panel. Export is blocked until all errors are resolved.
 
-By default, selected mesh objects are exported as separate FBX files named after each object.
+By default, each selected asset is exported to its own file, together with its LODs, collision meshes and sockets when the Engine uses them.
 
 | Check | What it catches |
 |---|---|
@@ -21,19 +21,23 @@ By default, selected mesh objects are exported as separate FBX files named after
 | **Ngons** | Faces with more than 4 vertices |
 | **UVs** | Missing UV maps, overlapping UV islands |
 | **Geometry cleanup** | Degenerate / zero-area faces that should be fixed before export |
-| **Topology** | Edge-flow rules: poles with 6+ edges, 3/5-edge poles on smoothly curved areas (hard corners are fine), sliver triangles |
+| **Topology** | Edge-flow rules: poles with 6+ edges, 3/5-edge poles on smoothly curved areas (hard corners are fine), sliver triangles, warped quads |
+| **Normals / manifold** | Faces facing the wrong way, closed parts facing inward, loose geometry, edges shared by 3+ faces |
+| **Shading** | Hard edges off UV seams, GPU vertex cost |
+| **Collisions** | Collision meshes named after a mesh that doesn't exist (they'd be left out) |
 | **Materials** | Empty material slots, Image Texture nodes with no image or missing file |
 
-Each failed check shows the offending object, a description of the problem, and a fix hint.
+Each failed check shows the offending object, a description of the problem, and a fix hint; many have **Fix** and **Show** (opens Edit Mode with the culprits selected). A warning that is fine for this asset can be **accepted** with the checkbox next to it: the reason is stored on the object and the report lists it as accepted. Errors can't be accepted.
 
 ---
 
 ## Installation
 
+The addon is a Blender 4.2+ extension (`blender_manifest.toml`).
+
 1. Download or clone this repository
-2. Zip the `blender_asset_validator/` folder
-3. In Blender: **Edit > Preferences > Add-ons > Install** > select the zip
-4. Enable **Object: Asset Validator**
+2. Zip the `blender_asset_validator/` folder (or build it: `blender --command extension build --source-dir blender_asset_validator`)
+3. In Blender: **Edit > Preferences > Get Extensions > ⌄ (top right) > Install from Disk** > select the zip
 
 The panel appears in the **N-panel > Asset Validator** tab of any 3D Viewport.
 
@@ -43,10 +47,11 @@ The panel appears in the **N-panel > Asset Validator** tab of any 3D Viewport.
 
 1. Open a `.blend` file with mesh objects
 2. Press **N** in the 3D Viewport and click the **Asset Validator** tab
-3. Click **Validate Asset** to run the checks
-4. Fix any errors shown in the panel
-5. Select the mesh assets you want to export
-6. Click **Export FBX**
+3. Pick the **Engine** (and a **Preset** if the platform needs one)
+4. Click **Validate Asset** to run the checks, or tick **Step by Step** to review them in order
+5. Fix any errors shown in the panel
+6. Select the mesh assets you want to export
+7. Click **Export**
 
 The addon re-validates the export set before writing files.
 
@@ -56,7 +61,30 @@ With the default export settings, selecting `Chair`, `Table`, and `Lamp` will cr
 - `//exports/Table.fbx`
 - `//exports/Lamp.fbx`
 
-If `export.individual_files` is set to `false`, the addon exports one combined FBX instead.
+If `export.individual_files` is set to `false`, the addon exports one combined file instead.
+
+### Engines
+
+The **Engine** dropdown loads `config/engines/<engine>.json` on top of the default rules. It decides the file format, how LODs are laid out and which names are collision meshes or sockets. Collision meshes skip the render checks (materials, UVs, topology...) and are written in their asset's file; selected LODs and collisions are never exported on their own.
+
+| Engine | File | LODs | Collision / sockets |
+|---|---|---|---|
+| Custom | FBX | not exported | none |
+| Unreal | FBX, one per asset | Empty with `fbx_type = LodGroup` (an FBX LOD Group) over `Name_LOD0..n` | `UCX_`/`UBX_`/`USP_`/`UCP_Name[_NN]` (renamed after `Name_LOD0` on export), `SOCKET_` empties parented to the asset |
+| Unity | FBX, one per asset | `Name_LOD0..n` side by side (Unity builds the LOD Group) | `UCX_Name[_NN]`, for an import script: Unity has no convention of its own |
+| Godot | glTF binary (.glb) | not exported: Godot builds its own on import | `Name-colonly` / `Name-convcolonly` (`-col` meshes are regular assets) |
+
+### Heatmaps
+
+**Heatmap** colors the selected meshes by a metric (blue fine, red bad, gray not applicable): *Quad Warp* and *Triangle Quality*. It's a temporary color attribute (`AV_heat`) shown with Solid shading > Attribute; the ✕ button removes it, and Export strips it so it never reaches the engine.
+
+### Batch validation (CI)
+
+```powershell
+blender -b --factory-startup --python blender_asset_validator/cli.py -- --engine unreal --report report.html a.blend b.blend
+```
+
+Validates every mesh in each file with the engine and preset saved in it (or the ones given), prints the report, writes a `.json` or `.html` report, and exits with 1 if any file has errors. `--factory-startup` keeps an installed copy of the addon from loading next to this one.
 
 ### Mesh optimization
 
@@ -70,7 +98,7 @@ All three work on the selected meshes and can be undone.
 
 ## Configuration
 
-Rules are driven by `config/default.json`. Edit it directly, or drop a preset into `config/presets/` and pick it in the panel's **Preset** dropdown: its values are merged on top of `default.json`. Validate, Fix and Export all check the same objects, the ones Export would export (`export.use_selection` / `use_active_collection`). The buttons are disabled in Edit Mode.
+Rules are driven by `config/default.json`, with the Engine's `config/engines/<engine>.json`, the Preset's `config/presets/<preset>.json` and an optional `asset_validator.json` next to the .blend (the project's own rules) merged on top, in that order. Validate, Fix and Export all check the same objects, the ones Export would export (`export.use_selection` / `use_active_collection`). The buttons are disabled in Edit Mode.
 
 ```json
 {
@@ -122,12 +150,15 @@ Rules are driven by `config/default.json`. Edit it directly, or drop a preset in
 
 Key export options:
 
-- `path`: output folder for FBX files
+- `format`: `fbx` or `gltf` (.glb)
+- `path`: output folder
 - `use_selection`: validate and export only selected mesh objects
 - `use_active_collection`: use the active collection instead of selection
 - `individual_files`: export one FBX per asset instead of one combined FBX
 
 Topology angles are in degrees: `flat_angle` is the bend still treated as flat (dissolve), `feature_angle` the bend from which an edge counts as a hard edge (pinned, poles allowed), `quad_angle` the tolerance when joining triangles into quads. `min_triangle_quality` is 1 for an equilateral triangle.
+
+`roles.collision` and `roles.socket` are regexes on object names; the collision one names the mesh it belongs to with a `(?P<owner>...)` group.
 
 Two presets are included:
 
@@ -140,7 +171,7 @@ Two presets are included:
 
 ## Adding a new check
 
-Create a file in `checks/`, decorate the function with `@register_check`, and import it in `checks/__init__.py`. The engine will pick it up automatically.
+Create a file in `checks/`, decorate the function with `@register_check`, and import it in `checks/__init__.py`. The engine will pick it up automatically. Checks run on assets and LODs; use `@register_check(roles=("asset", "lod", "collision"))` for one that also applies to collision meshes. Add it to a step in `core/steps.py` for the guided mode.
 
 ```python
 # checks/my_check.py
@@ -173,32 +204,43 @@ from . import naming, transforms, geometry, materials, my_check
 
 ```text
 blender_asset_validator/
-|-- __init__.py              # bl_info, register/unregister
+|-- __init__.py              # register/unregister
+|-- blender_manifest.toml    # extension metadata (Blender 4.2+)
+|-- cli.py                   # batch validation without the UI
 |-- config/
 |   |-- default.json         # Default rules and export settings
-|   `-- presets/             # Per-project overrides
+|   |-- engines/             # Unreal, Unity, Godot conventions
+|   `-- presets/             # Platform / budget overrides
 |-- core/
 |   |-- registry.py          # @register_check decorator
 |   |-- engine.py            # Loads config and runs checks
+|   |-- roles.py             # asset / LOD / collision / socket, from the engine's name patterns
+|   |-- steps.py             # Guided steps and per-object approvals
+|   |-- waivers.py           # Accepted warnings
 |   |-- result.py            # CheckResult dataclass + Severity enum
 |   `-- state.py             # Shared validation results for UI/operators
 |-- checks/
-|   |-- naming.py
+|   |-- naming.py            # Naming, collision owners
 |   |-- transforms.py
 |   |-- geometry.py          # Polycount, ngons, UV overlap, degenerate faces
-|   |-- topology.py          # Edge-flow rules (poles, slivers)
+|   |-- integrity.py         # Normals, manifold
+|   |-- topology.py          # Edge-flow rules (poles, slivers, warped quads)
+|   |-- shading.py           # Hard edges off seams, GPU vertex cost
 |   `-- materials.py
 |-- operations/
+|   |-- cleanup.py           # Fixers
+|   |-- heatmap.py           # Per-face heatmaps
 |   |-- lod.py               # LOD baking
 |   `-- topology.py          # Clean Topology, Retopologize, shared feature detection
 |-- operators/
-|   |-- validate.py          # Validate operator
+|   |-- validate.py, fix.py  # Validate, guided steps, Fix, Show, Accept
+|   |-- heatmap.py
 |   |-- lod.py, topology.py  # Generate LODs, Clean Topology, Retopologize
-|   `-- export.py            # FBX export operator with per-asset export support
+|   `-- export.py            # Per-engine export
 |-- ui/
 |   `-- panel.py             # N-panel UI
 `-- report/
-    `-- generator.py         # Console report + optional JSON output
+    `-- generator.py         # Console, JSON and HTML reports
 ```
 
 ---
@@ -224,6 +266,8 @@ pip install fake-bpy-module-4.3
 ```
 
 Blender is found via `-Blender`, `$env:BLENDER`, `blender` on PATH, or the Microsoft Store install. Results go to `tests/_out/`; the script exits 1 if any check fails or doesn't finish.
+
+`tests/bench.py` times every check on 16k, 260k and 1M-triangle meshes (not run by `run.ps1`; see its header). The plan and its status are in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
 ---
 
