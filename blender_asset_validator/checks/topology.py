@@ -8,7 +8,7 @@ import bpy
 from ..core.mesh_utils import select_in_edit_mode
 from ..core.registry import register_check
 from ..core.result import CheckResult, Severity
-from ..operations.cleanup import triangulate_faces
+from ..operations.cleanup import triangulate_warped, warped_quads
 
 _QUAD_DOMINANT = 0.5  # below this share of quads, poles are meaningless (every triangulated vert is one)
 
@@ -63,9 +63,7 @@ def check_quad_planarity(objects: List[bpy.types.Object], config: dict) -> List[
         return results
 
     for obj in objects:
-        mesh = obj.data
-        co = [v.co for v in mesh.vertices]
-        warped = [p.index for p in mesh.polygons if len(p.vertices) == 4 and quad_warp(*(co[i] for i in p.vertices)) > max_warp]
+        warped = warped_quads(obj.data, max_warp)
         if warped:
             results.append(CheckResult(
                 severity=Severity.WARNING,
@@ -73,19 +71,11 @@ def check_quad_planarity(objects: List[bpy.types.Object], config: dict) -> List[
                 object_name=obj.name,
                 fix_hint="Triangulate them yourself so engine and baker split them the same way",
                 check_name="topology",
-                fix=partial(triangulate_faces, obj, warped),
+                fix=partial(triangulate_warped, obj, max_warp),
                 select=partial(select_in_edit_mode, obj, "FACE", warped),
             ))
 
     return results
-
-
-def quad_warp(a, b, c, d) -> float:
-    """Angle between the two triangles of quad abcd, split on its flatter diagonal (0 = planar)."""
-    def fold(p, q, r, s):  # triangles pqr and prs share diagonal pr
-        n1, n2 = (q - p).cross(r - p), (r - p).cross(s - p)
-        return n1.angle(n2, 0.0) if n1.length and n2.length else 0.0
-    return min(fold(a, b, c, d), fold(b, c, d, a))
 
 
 def topology_stats(bm, max_valence: int, curve_angle: float, min_quality: float, hard_angle: float) -> dict:

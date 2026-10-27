@@ -48,7 +48,8 @@ try:
     r = run({"normals"}, half, inside, ok_sphere, grid)
     msgs = {x.object_name: x for x in r}
     check("normals: half-flipped sphere is an error", "HalfFlipped" in msgs and msgs["HalfFlipped"].severity.value == "ERROR", str([x.message for x in r]))
-    check("normals: inside-out cube flagged", "InsideOut" in msgs)
+    check("normals: inside-out cube is a warning without fix (could be a room)",
+          "InsideOut" in msgs and msgs["InsideOut"].severity.value == "WARNING" and msgs["InsideOut"].fix is None)
     check("normals: good sphere and open grid clean", "GoodSphere" not in msgs and "OpenGrid" not in msgs)
     down = mk("GridFacingDown", lambda bm: (bmesh.ops.create_grid(bm, x_segments=4, y_segments=4, size=1.0), bmesh.ops.reverse_faces(bm, faces=bm.faces)))
     def mobius(bm):
@@ -66,10 +67,9 @@ try:
     check("normals: open grid facing the other way is fine", not any(x.object_name == "GridFacingDown" for x in r2), str([x.message for x in r2]))
     check("normals: Möbius strip reported as can't-orient warning, no fix",
           any(x.object_name == "Mobius" and x.severity.value == "WARNING" and x.fix is None for x in r2))
-    for o in (half, inside):
-        msgs[o.name].fix()
-    check("normals: fix clears both", not run({"normals"}, half, inside))
-    check("normals: fix makes the cube face outward", all(p.normal.dot(p.center) > 0 for p in inside.data.polygons))
+    msgs["HalfFlipped"].fix()
+    check("normals: fix clears the error", not run({"normals"}, half))
+    check("normals: fix makes the sphere face outward", all(p.normal.dot(p.center) > 0 for p in half.data.polygons))
 
     # ---------- manifold ----------
     def loose(bm):
@@ -97,6 +97,17 @@ try:
     check("planarity: warped quad flagged", len(w) == 1 and w[0].object_name == "Warped", str([x.message for x in r]))
     w[0].fix()
     check("planarity: fix triangulates only it", len(wq.data.polygons) == 5 and not [x for x in run({"topology"}, wq) if "warped" in x.message])
+    wq2 = mk("WarpedRenumbered", warped)
+    def w_index(o): return next(p.index for p in o.data.polygons if any(o.data.vertices[i].co.z for i in p.vertices))
+    w = next(x for x in run({"topology"}, wq2) if "warped" in x.message)
+    bm = bmesh.new(); bm.from_mesh(wq2.data); bm.faces.ensure_lookup_table()
+    flat = next(f for f in bm.faces if all(v.co.z == 0 for v in f.verts) and f.index < w_index(wq2))
+    bmesh.ops.delete(bm, geom=[flat], context="FACES_ONLY")  # an earlier fix renumbers the faces
+    bm.to_mesh(wq2.data); bm.free()
+    w.fix()
+    check("planarity: fix finds the warped quad again after renumbering",
+          len(wq2.data.polygons) == 4 and not [x for x in run({"topology"}, wq2) if "warped" in x.message],
+          f"{len(wq2.data.polygons)} faces")
 
     # ---------- shading ----------
     def sharp_cube(bm):

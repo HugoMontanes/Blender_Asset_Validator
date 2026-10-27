@@ -22,7 +22,7 @@ def check_normals(objects: List[bpy.types.Object], config: dict) -> List[CheckRe
     for obj in objects:
         bm = bmesh.new()
         bm.from_mesh(obj.data)
-        wrong, twisted = wrong_way_faces(bm)
+        wrong, inward, twisted = wrong_way_faces(bm)
         bm.free()
 
         if wrong:
@@ -34,6 +34,16 @@ def check_normals(objects: List[bpy.types.Object], config: dict) -> List[CheckRe
                 check_name="normals",
                 fix=partial(fix_normals, obj, config),
                 select=partial(select_in_edit_mode, obj, "FACE", wrong),
+            ))
+        if inward:
+            results.append(CheckResult(
+                severity=Severity.WARNING,
+                message=f"'{obj.name}' has closed part(s) facing inward ({len(inward)} face(s)): fine for a room or skydome",
+                object_name=obj.name,
+                fix_hint="If it should be seen from outside: Edit Mode > Mesh > Normals > Recalculate Outside (Shift+N)",
+                check_name="normals",
+                # no fix: Fix All would turn intended interiors outward
+                select=partial(select_in_edit_mode, obj, "FACE", inward),
             ))
         if twisted:
             results.append(CheckResult(

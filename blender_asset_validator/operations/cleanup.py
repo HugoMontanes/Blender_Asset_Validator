@@ -48,7 +48,7 @@ def fix_normals(obj: bpy.types.Object, config: dict) -> Optional[str]:
     try:
         bm = bmesh.new()
         bm.from_mesh(mesh)
-        wrong, _ = wrong_way_faces(bm)
+        wrong, _, _ = wrong_way_faces(bm)
         bm.faces.ensure_lookup_table()
         bmesh.ops.reverse_faces(bm, faces=[bm.faces[i] for i in wrong])
         flipped = len(wrong)
@@ -66,9 +66,11 @@ def fix_normals(obj: bpy.types.Object, config: dict) -> Optional[str]:
 
 
 def wrong_way_faces(bm: bmesh.types.BMesh) -> tuple:
-    """(indices of faces Recalculate Outside would flip, indices of edges it still
-    can't make consistent, i.e. non-orientable surface). Open parts have no outside,
-    so one that faces the other way as a whole is fine; only its odd faces count."""
+    """(indices of faces Recalculate Outside would flip, of faces on closed parts
+    facing inward as a whole, of edges it still can't make consistent, i.e.
+    non-orientable surface). Open parts have no outside, so one that faces the
+    other way as a whole is fine; only its odd faces count. A closed part turned
+    inward as a whole is usually on purpose (room, skydome), so it's apart."""
     bm.normal_update()
     before = [f.normal.copy() for f in bm.faces]
     work = bm.copy()  # same element order as bm
@@ -79,13 +81,14 @@ def wrong_way_faces(bm: bmesh.types.BMesh) -> tuple:
     work.free()
 
     bm.faces.index_update()
-    wrong = []
+    wrong, inward = [], []
     for part in loose_parts(bm):
         flipped = [f.index for f in part if f.index in flips]
-        closed = all(len(e.link_faces) == 2 for f in part for e in f.edges)
-        if closed or len(flipped) < len(part):
+        if len(flipped) < len(part):
             wrong.extend(flipped)
-    return sorted(wrong), twisted
+        elif all(len(e.link_faces) == 2 for f in part for e in f.edges):
+            inward.extend(flipped)
+    return sorted(wrong), sorted(inward), twisted
 
 
 def delete_loose(obj: bpy.types.Object, config: dict) -> Optional[str]:
@@ -103,14 +106,30 @@ def delete_loose(obj: bpy.types.Object, config: dict) -> Optional[str]:
     return f"deleted {len(verts)} loose vertex(es), {len(edges)} loose edge(s)" if verts or edges else None
 
 
-def triangulate_faces(obj: bpy.types.Object, indices: List[int]) -> Optional[str]:
+def warped_quads(mesh: bpy.types.Mesh, max_warp: float) -> List[int]:
+    """Indices of quads bent more than max_warp radians."""
+    co = [v.co for v in mesh.vertices]
+    return [p.index for p in mesh.polygons if len(p.vertices) == 4 and quad_warp(*(co[i] for i in p.vertices)) > max_warp]
+
+
+def quad_warp(a, b, c, d) -> float:
+    """Angle between the two triangles of quad abcd, split on its flatter diagonal (0 = planar)."""
+    def fold(p, q, r, s):  # triangles pqr and prs share diagonal pr
+        n1, n2 = (q - p).cross(r - p), (r - p).cross(s - p)
+        return n1.angle(n2, 0.0) if n1.length and n2.length else 0.0
+    return min(fold(a, b, c, d), fold(b, c, d, a))
+
+
+def triangulate_warped(obj: bpy.types.Object, max_warp: float) -> Optional[str]:
     """Fixer for check_quad_planarity: split warped quads now, so the engine
-    and the baker can't each pick a different diagonal."""
+    and the baker can't each pick a different diagonal. Finds them again: an
+    earlier fix in the same Fix All may have renumbered the faces."""
     mesh = obj.data
+    indices = warped_quads(mesh, max_warp)
     bm = bmesh.new()
     bm.from_mesh(mesh)
     bm.faces.ensure_lookup_table()
-    faces = [bm.faces[i] for i in indices if i < len(bm.faces) and len(bm.faces[i].verts) == 4]
+    faces = [bm.faces[i] for i in indices]
     bmesh.ops.triangulate(bm, faces=faces, quad_method="BEAUTY")
     bm.to_mesh(mesh)
     bm.free()
