@@ -49,7 +49,7 @@ Documento para retomar el trabajo desde cualquier chat o dispositivo. Al empezar
 
 | Fase | Rama | Estado |
 |---|---|---|
-| 0 Cimientos | `feature/phase-0-foundations` | hecha, revisada, testeada (234 tests) y commiteada. Falta: que el usuario pruebe el último zip en su escena y verificar en motor |
+| 0 Cimientos | `feature/phase-0-foundations` | hecha, revisada, testeada (234 tests) y commiteada. Falta: que el usuario pruebe el último zip en su escena y verificar en motor. Arreglos de las pruebas con el Makarov en `bugfix/hard-surface-normals-and-lods` (252 tests) |
 | 1 UVs y texel density | — | pendiente |
 | 2 Hard surface | — | pendiente |
 | 3 Entornos, colisiones, texturas | — | pendiente |
@@ -125,6 +125,24 @@ Todo lo demás depende de esto: el motor fija las reglas y los roles dicen qué 
   - Los LODs heredaban las aprobaciones del asset por `obj.copy()`.
   - El heatmap Triangle Quality usa el `min_triangle_quality` del check: la mitad de la rampa es el límite, como en Quad Warp.
   - Descartados tras medirlos: `foreach_get` con int64 no es más lento que con int32 (0,14 s frente a 0,17 s en 2M loops), y `load_config` en cada redibujado del panel cuesta 0,15 ms.
+- **Pruebas con el Makarov** (2026-10-28): `C:\Users\hugom\Documents\Assets\makarov-pm\source\Makarov.blend`, una pistola casi final: 8 piezas emparentadas a `Makarov_base` (escala 0,034 y rotación de un import FBX), 13,7k triángulos en total, todo triángulos, normales custom y texturas horneadas empaquetadas. Se prueba con una copia en el scratchpad. Todo tarda menos de 1 s, salvo Retopologize (28 s) y el export glTF (12 s). Hallazgos:
+  - **`transfer_normals` estropea las aristas duras**: con `POLYINTERP_NEAREST`, copiar las normales a una malla *idéntica* deja el 5 % de las esquinas a más de 45° (cogen la normal de la cara vecina). Con `NEAREST_POLYNOR` el error es 0, y en Clean Topology el p95 baja de 49° a 7°. Afecta a `fix_normals`, Clean Topology, LODs y Retopologize: el arreglo es una línea en la función compartida.
+  - **Los LODs generados bloquean el export** a Unreal/Unity (`Makarov_mag_LOD3`: 2 caras al revés) y traen vértices/aristas sueltos y non-manifold que el original no tiene.
+  - **Falsos positivos de "closed part facing inward"** en LODs pequeños: la bala LOD2 (88 caras) sale entera "hacia dentro", pero su volumen con signo es positivo, como el original. `recalc_face_normals` falla en cascos de pocas caras; el volumen con signo es fiable. Sí hay una pieza invertida de verdad (`Makarov_base_LOD3`, volumen negativo).
+  - **Transforms**: 15 errores bloquean el export del arma tal como está. El de la raíz (escala 0,034) es correcto; los de los hijos son pivotes de piezas móviles (corredera, martillo, gatillo, cargador), y aplicarlos los pierde. Además, `individual_files` parte el arma en 8 ficheros sin jerarquía.
+  - **Godot**: cada .glb incrusta las texturas 4K: 8 ficheros, 245 MB (38 MB solo la bala).
+  - **Clean Topology y Retopologize en un asset ya horneado**: Clean Topology conserva forma y UVs (la textura se lee igual), pero quadea una malla que el baker trianguló, y salen 40-54 quads alabeados por pieza. Retopologize duplica las costuras UV. Son herramientas de antes del bake. El aviso de slivers (1.012, el 7 % de los triángulos) recomienda justo esas dos herramientas.
+  - Lo que va bien: Fix All no toca nada del arma (no hay nada arreglable) y el FBX y el glTF vuelven idénticos al reimportarlos (geometría, normales custom y UVs). El CLI devuelve 1 y escribe el HTML.
+  - Menores: en el Floor (54 aristas con 3+ caras), Fix All pasa de 8 a 12 caras al revés. Los nombres de mesh `.001` no tienen fix. El heatmap Quad Warp sale todo gris en mallas trianguladas.
+- **Arreglado en `bugfix/hard-surface-normals-and-lods`** (2026-10-28, rama desde la fase 0, sin ticket). Cada punto tiene un test en `check_regressions.py`, y se ha comprobado que falla con el código anterior.
+  - `transfer_normals` muestrea en una copia con cada cara separada y encogida un 1 % hacia su centro (`POLYINTERP_NEAREST`). Así una esquina en una arista dura lee su propia cara. Se probó `NEAREST_POLYNOR`: arregla la copia idéntica, pero escalona las normales de los LODs, porque no interpola. Medido en el Makarov: Clean Topology pasa de p95 49° a 3°, y la corredera LOD1, del 36 % al 8 % de esquinas desviadas más de 10°. El coste a 1M triángulos pasa de 5,3 s a 6,5 s: `normals_split_custom_set` con `.tolist()` es 6 veces más rápido que con un array numpy.
+  - `fix_normals` ya no transfiere. Guarda las normales antes de dar la vuelta a las caras y las vuelve a escribir: al girar unas caras se rehacen los abanicos de suavizado y se estropean las normales guardadas de las vecinas. Las de una cara girada se orientan hacia su cara.
+  - `wrong_way_faces`: en cada pieza, las caras malas son las de la minoría (antes, en una pieza abierta, marcaba las 13 de la mayoría en vez de las 3 sueltas). Una pieza cerrada mira hacia dentro si su volumen con signo es negativo, y eso es un aviso aparte. La primera versión decidía también las caras malas por el volumen: en una habitación con una cara suelta, marcaba las otras 95, y el Fix automático de los LODs la habría girado hacia fuera sin avisar. Coste: `check_normals` pasa de 4,0 s a 4,8 s con 1M triángulos.
+  - LODs: después del colapso se borran los vértices y aristas sueltos y se giran las caras al revés. Las aristas duras ya no se protegen ni se usan como borde en el decimado: con las aristas duras que la transferencia nueva marca en el LOD1 (169 en el cargador), el colapso del LOD2 hacía 20 aristas con 3+ caras. En un asset de juego están casi siempre sobre costuras UV, que siguen protegidas. El Makarov ya exporta con LODs a Unreal y Unity, y el FBX vuelve idéntico al reimportarlo (32 mallas). Coste a 1M triángulos: la limpieza añade unos 4 s a un Generate LODs de 34-37 s, casi todo en `wrong_way_faces`; saltarse la escritura cuando no hay nada que girar no ahorraba nada medible.
+  - Las normales custom se borran antes del decimado con `mesh.customdata_custom_splitnormals_clear`, no quitando el atributo `custom_normal`, que solo existe en las versiones recientes (en 4.2 no se ha podido probar).
+  - Aviso en `check_transforms` cuando el export pierde el vínculo con el padre: con `individual_files`, cuando el padre no se exporta, o cuando un LOD Group de Unreal ocupa su sitio. No sale en LODs ni colisiones. El export no cambia.
+  - `tests/bench.py` llevaba roto desde que se añadieron los roles: llamaba a `check_collisions` con objetos que no son colisión.
+  - Queda: LOD3 sigue degradando normales y texturas (es lo esperable al 10 %), y `Makarov_base_LOD3` tiene una pieza plegada de verdad (volumen negativo), que sale como aviso "inward". Los .glb con texturas duplicadas siguen igual. Aceptado en la revisión: el LOD1 tampoco protege las aristas duras que no están sobre una costura UV (`check_shading` ya las avisa), y en una pieza cerrada plana (una tarjeta de doble cara soldada) el aviso "inward" sale al azar, porque su volumen es ~0 (`ponytail:` en `wrong_way_faces`).
 - **Siguiente paso**: la fase 1. Los puntos lentos que quedan (ver Línea base) solo valen la pena si un asset real lo pide.
 
 ## Fase 1: UVs y texel density
@@ -231,6 +249,14 @@ Después de la fase 0 (numpy en UVs, shading y planaridad), medido con `tests/be
 | 16k | 0,22 s | 0,06 s | 0,10 s | 0,04 s | 0,01 s |
 | 261k | 3,1 s | 1,1 s | 0,66 s | 0,84 s | 0,11 s |
 | 1M | 13,6 s | 5,4 s | 2,9 s | 3,3 s | 0,48 s |
+
+Con el volumen con signo en `check_normals` (2026-10-28), medido el mismo día con el código anterior y con el nuevo:
+
+| Triángulos | Total | check_uvs | check_shading | check_normals (antes → ahora) | check_quad_planarity |
+|---|---|---|---|---|---|
+| 16k | 0,30 s | 0,06 s | 0,13 s | 0,04 → 0,08 s | 0,01 s |
+| 261k | 3,9 s | 1,4 s | 0,66 s | 0,88 → 1,38 s | 0,11 s |
+| 1M | 16,8 s | 6,5 s | 3,2 s | 3,97 → 4,84 s | 0,52 s |
 
 Lo que más tarda ahora:
 - `check_normals`: `loose_parts` es un recorrido en Python. Se aceleraría con una union-find en numpy.

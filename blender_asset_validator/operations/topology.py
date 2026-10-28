@@ -15,7 +15,7 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 from mathutils.geometry import barycentric_transform
 
-from ..core.mesh_utils import bake_mesh
+from ..core.mesh_utils import bake_mesh, read_array
 
 _UV_EPSILON = 1e-5
 _MAX_DISSOLVE_PASSES = 32
@@ -613,9 +613,22 @@ class Surface:
 
 
 def transfer_normals(mesh: bpy.types.Mesh, source: bpy.types.Object) -> None:
-    """Custom normals of `source` (evaluated, same local space) written into `mesh` in
-    place, so linked duplicates keep sharing it and the owner's modifiers aren't applied."""
-    holder = bpy.data.objects.new("_AssetValidator_normals", mesh)
+    """Custom normals of `source` (evaluated, same local space) written into `mesh` in place, so linked
+    duplicates keep sharing it. Read on a copy with each face split off and shrunk 1%: a corner on a hard edge
+    touches both faces and the transfer took either (a cube came out 90° off); NEAREST_POLYNOR steps LODs."""
+    starts = read_array(mesh.polygons, "loop_start", dtype=np.int64)
+    sizes = read_array(mesh.polygons, "loop_total", dtype=np.int64)
+    corners = read_array(mesh.vertices, "co", 3, np.float64)[read_array(mesh.loops, "vertex_index", dtype=np.int64)]
+    corners += (np.repeat(np.add.reduceat(corners, starts) / sizes[:, None], sizes, axis=0) - corners) * 0.01
+    probe = bpy.data.meshes.new("_AssetValidator_normals_probe")  # one vertex per corner, same corner order
+    probe.vertices.add(len(corners))
+    probe.vertices.foreach_set("co", corners.astype(np.float32).ravel())
+    probe.loops.add(len(corners))
+    probe.loops.foreach_set("vertex_index", np.arange(len(corners), dtype=np.int32))
+    probe.polygons.add(len(starts))
+    probe.polygons.foreach_set("loop_start", starts.astype(np.int32))
+    probe.update(calc_edges=True)
+    holder = bpy.data.objects.new("_AssetValidator_normals", probe)
     bpy.context.scene.collection.objects.link(holder)
     try:
         transfer = holder.modifiers.new("normals", "DATA_TRANSFER")
@@ -627,8 +640,9 @@ def transfer_normals(mesh: bpy.types.Mesh, source: bpy.types.Object) -> None:
         baked = bake_mesh(holder)
     finally:
         bpy.data.objects.remove(holder)
+        bpy.data.meshes.remove(probe)
     try:
-        normals = [tuple(n.vector) for n in baked.corner_normals]
+        normals = read_array(baked.corner_normals, "vector", 3)
     finally:
         bpy.data.meshes.remove(baked)
-    mesh.normals_split_custom_set(normals)
+    mesh.normals_split_custom_set(normals.tolist())  # a list: 6x faster than the numpy array at 1M tris

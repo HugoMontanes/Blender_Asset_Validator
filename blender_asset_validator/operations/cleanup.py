@@ -5,7 +5,7 @@ import bmesh
 import numpy as np
 
 from ..core.mesh_utils import read_array
-from .topology import loose_parts, transfer_normals
+from .topology import loose_parts
 
 
 def fix_degenerate_faces(obj: bpy.types.Object, config: dict) -> Optional[str]:
@@ -50,57 +50,71 @@ def fix_degenerate_faces(obj: bpy.types.Object, config: dict) -> Optional[str]:
 
 
 def fix_normals(obj: bpy.types.Object, config: dict) -> Optional[str]:
-    """Fixer for check_normals: flips exactly the faces it reported. Custom normals
-    are per corner and flip with their face, so they're re-transferred."""
+    """Fixer for check_normals: flips exactly the faces it reported. Custom normals are read before and
+    written back: the flip regroups the smooth fans and scrambles the neighbours' ones, and a transfer
+    blurs hard edges (a cube's went 90° off). A flipped face keeps its own, turned to face out with it."""
     mesh = obj.data
-    ref = None
-    if mesh.has_custom_normals:
-        ref = bpy.data.objects.new("_AssetValidator_normals_ref", mesh.copy())
-        bpy.context.scene.collection.objects.link(ref)
-    try:
-        bm = bmesh.new()
-        bm.from_mesh(mesh)
-        wrong, _, _ = wrong_way_faces(bm)
-        bm.faces.ensure_lookup_table()
-        bmesh.ops.reverse_faces(bm, faces=[bm.faces[i] for i in wrong])
-        flipped = len(wrong)
-        bm.to_mesh(mesh)
-        bm.free()
-        mesh.update()
-        if ref is not None:
-            transfer_normals(mesh, ref)
-    finally:
-        if ref is not None:
-            ref_mesh = ref.data
-            bpy.data.objects.remove(ref)
-            bpy.data.meshes.remove(ref_mesh)
-    return f"flipped {flipped} face(s)" if flipped else None
+    custom = mesh.has_custom_normals
+    if custom:
+        normals = read_array(mesh.corner_normals, "vector", 3)
+        old_vert = read_array(mesh.loops, "vertex_index", dtype=np.int64)
+    bm = bmesh.new()
+    bm.from_mesh(mesh)
+    wrong, _, _ = wrong_way_faces(bm)
+    bm.faces.ensure_lookup_table()
+    bmesh.ops.reverse_faces(bm, faces=[bm.faces[i] for i in wrong])
+    bm.to_mesh(mesh)
+    bm.free()
+    mesh.update()
+    if wrong and custom:
+        new_vert = read_array(mesh.loops, "vertex_index", dtype=np.int64)
+        old = normals.copy()
+        for i in wrong:  # same faces, same corner slots; only their order inside each flipped face changed
+            poly = mesh.polygons[i]
+            corners = range(poly.loop_start, poly.loop_start + poly.loop_total)
+            by_vert = {old_vert[c]: old[c] for c in corners}
+            for c in corners:
+                n = by_vert[new_vert[c]]
+                normals[c] = n if n.dot(poly.normal) >= 0 else -n
+        mesh.normals_split_custom_set(normals.tolist())  # a list: a numpy array is parsed row by row, 6x slower
+    return f"flipped {len(wrong)} face(s)" if wrong else None
 
 
 def wrong_way_faces(bm: bmesh.types.BMesh) -> tuple:
-    """(indices of faces Recalculate Outside would flip, of faces on closed parts
-    facing inward as a whole, of edges it still can't make consistent, i.e.
-    non-orientable surface). Open parts have no outside, so one that faces the
-    other way as a whole is fine; only its odd faces count. A closed part turned
-    inward as a whole is usually on purpose (room, skydome), so it's apart."""
+    """(indices of faces pointing against most of their part, of faces on closed parts pointing inward,
+    of edges where the surface can't be oriented). Inward goes by signed volume: recalc_face_normals only
+    guesses the outside and turned a 10-face cone inside out. It's apart: usually on purpose (room, skydome)."""
     bm.normal_update()
     before = [f.normal.copy() for f in bm.faces]
     work = bm.copy()  # same element order as bm
     bmesh.ops.recalc_face_normals(work, faces=work.faces)
     work.normal_update()
+    work.faces.ensure_lookup_table()
     flips = {i for i, (f, n) in enumerate(zip(work.faces, before)) if f.normal.dot(n) < 0}
     twisted = [e.index for e in work.edges if len(e.link_loops) == 2 and e.link_loops[0].vert is e.link_loops[1].vert]
-    work.free()
 
     bm.faces.index_update()
     wrong, inward = [], []
     for part in loose_parts(bm):
         flipped = [f.index for f in part if f.index in flips]
-        if len(flipped) < len(part):
-            wrong.extend(flipped)
-        elif all(len(e.link_faces) == 2 for f in part for e in f.edges):
-            inward.extend(flipped)
+        kept = [f.index for f in part if f.index not in flips]
+        # The fewer are odd, even on a closed part: a room with one stray face stays a room. Fixed, the part
+        # points the way recalc put it (sign 1) or the opposite
+        odd, rest, sign = (flipped, kept, 1) if len(flipped) <= len(kept) else (kept, flipped, -1)
+        wrong.extend(odd)
+        # ponytail: a flat closed shell (welded double-sided card) has ~0 volume, so its inward warning is a
+        # coin toss; compare the volume against the part's area if one turns up
+        closed = all(len(e.link_faces) == 2 for f in part for e in f.edges)
+        if closed and sign * _signed_volume([work.faces[f.index] for f in part]) < 0:
+            inward.extend(rest)
+    work.free()
     return sorted(wrong), sorted(inward), twisted
+
+
+def _signed_volume(faces) -> float:
+    """Volume a closed surface encloses: positive when its faces point outward."""
+    origin = faces[0].verts[0].co.copy()  # a point on it: no float cancellation far from the world origin
+    return sum((f.verts[0].co - origin).dot(f.normal) * f.calc_area() for f in faces) / 3
 
 
 def delete_loose(obj: bpy.types.Object, config: dict) -> Optional[str]:

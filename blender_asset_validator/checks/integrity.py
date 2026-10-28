@@ -13,8 +13,8 @@ from ..operations.cleanup import delete_loose, fix_normals, wrong_way_faces
 @register_check
 def check_normals(objects: List[bpy.types.Object], config: dict) -> List[CheckResult]:
     """Faces facing the wrong way: engines cull back faces, so they render invisible.
-    Judged by what Recalculate Outside would flip, so running it (or Fix) always
-    clears the error; what it can't make consistent is reported apart."""
+    Fix flips exactly the faces reported, so it always clears the error; what can't
+    be made consistent is reported apart. Rules: cleanup.wrong_way_faces."""
     results = []
     if not config.get("geometry", {}).get("check_normals", True):
         return results
@@ -30,7 +30,7 @@ def check_normals(objects: List[bpy.types.Object], config: dict) -> List[CheckRe
                 severity=Severity.ERROR,
                 message=f"'{obj.name}' has {len(wrong)} face(s) facing the wrong way",
                 object_name=obj.name,
-                fix_hint="Edit Mode > Mesh > Normals > Recalculate Outside (Shift+N)",
+                fix_hint="Fix flips just these; by hand: Show, then Edit Mode > Mesh > Normals > Flip",
                 check_name="normals",
                 fix=partial(fix_normals, obj, config),
                 select=partial(select_in_edit_mode, obj, "FACE", wrong),
@@ -40,7 +40,7 @@ def check_normals(objects: List[bpy.types.Object], config: dict) -> List[CheckRe
                 severity=Severity.WARNING,
                 message=f"'{obj.name}' has closed part(s) facing inward ({len(inward)} face(s)): fine for a room or skydome",
                 object_name=obj.name,
-                fix_hint="If it should be seen from outside: Edit Mode > Mesh > Normals > Recalculate Outside (Shift+N)",
+                fix_hint="If it should be seen from outside: Show, then Edit Mode > Mesh > Normals > Flip",
                 check_name="normals",
                 # no fix: Fix All would turn intended interiors outward
                 select=partial(select_in_edit_mode, obj, "FACE", inward),

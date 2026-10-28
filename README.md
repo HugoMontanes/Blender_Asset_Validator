@@ -16,13 +16,13 @@ By default, each selected asset is exported to its own file, together with its L
 | Check | What it catches |
 |---|---|
 | **Naming** | Objects or mesh data that do not match the configured regex (default: PascalCase) |
-| **Transforms** | Unapplied location, rotation, or scale |
+| **Transforms** | Unapplied location, rotation, or scale; a warning on parented parts whose link the export drops (each asset in its own file, the parent not exported, or an Unreal LOD group in its place) |
 | **Polycount** | Triangle count over the configured budget (default: 50 000) |
 | **Ngons** | Faces with more than 4 vertices |
 | **UVs** | Missing UV maps, overlapping UV islands |
 | **Geometry cleanup** | Degenerate / zero-area faces that should be fixed before export |
 | **Topology** | Edge-flow rules: poles with 6+ edges, 3/5-edge poles on smoothly curved areas (hard corners are fine), sliver triangles, warped quads |
-| **Normals / manifold** | Faces facing the wrong way, closed parts facing inward, loose geometry, edges shared by 3+ faces |
+| **Normals / manifold** | Faces facing against most of their part, closed parts facing inward (by signed volume), loose geometry, edges shared by 3+ faces |
 | **Shading** | Hard edges off UV seams, GPU vertex cost |
 | **Collisions** | Collision meshes named after a mesh that doesn't exist (they'd be left out) |
 | **Materials** | Empty material slots, Image Texture nodes with no image or missing file |
@@ -90,7 +90,7 @@ Validates every mesh in each file with the engine and preset saved in it (or the
 
 All three work on the selected meshes and can be undone.
 
-- **Generate LODs** bakes `_LOD1..n` meshes into the `LODs` collection, each one from the previous level: planar dissolve of flat areas, then a collapse to `ratio x` the source triangles that removes open borders, seams, UV/material borders and sharp edges last, then the source's normals are transferred. Set `lod.clean_topology` to run Clean Topology on every level (quads instead of triangles).
+- **Generate LODs** bakes `_LOD1..n` meshes into the `LODs` collection, each one from the previous level: planar dissolve of flat areas, then a collapse to `ratio x` the source triangles that removes open borders, seams and UV/material borders last, then loose geometry and stray flipped faces are cleaned (they would block the export) and the source's normals are transferred, hard edges included. Hard edges aren't protected on their own: on a game mesh they sit on UV seams, and protecting them as well folded the mesh into edges with 3+ faces. Set `lod.clean_topology` to run Clean Topology on every level (quads instead of triangles).
 - **Clean Topology** edits the mesh in place without changing its shape or UVs: triangles to quads, flat edge loops dissolved (only whole loops on straight, flat strips, so quads stay quads), and the free vertices relaxed along the original surface for even edge flow. Borders, seams, sharp/hard edges and material borders are pinned. Relax is skipped on objects with a Subdivision/Multires modifier or shape keys. On a LOD it relaxes onto the full-resolution source.
 - **Retopologize** creates `<name>_Retopo`, an all-quad mesh whose edge flow follows the curvature (Blender's QuadriFlow), and hides the original; the mesh must be manifold with consistent normals, otherwise it reports the failure and creates nothing. Materials, UVs and normals are resampled from the original and seams are marked at UV island borders; re-unwrap if the islands need to be cleaner. Triangle ratio and symmetry are in the redo panel (F9).
 

@@ -5,6 +5,7 @@ import bpy
 
 from ..core.mesh_utils import bake_mesh
 from ..core.steps import APPROVED
+from .cleanup import delete_loose, fix_normals
 from .topology import Surface, topology_settings, transfer_normals, clean_bmesh, feature_verts
 
 _MARKER = "asset_validator_lod"
@@ -90,19 +91,27 @@ def generate_lods(objects: List[bpy.types.Object], config: dict) -> List[str]:
 
 
 def _reduce(mesh: bpy.types.Mesh, target_tris: int, normals_source, surface, clean, flat_angle: float) -> bpy.types.Mesh:
-    """New mesh: `mesh` reduced to ~target_tris without breaking its borders, seams or hard edges."""
+    """New mesh: `mesh` reduced to ~target_tris without breaking its borders, seams or UV/material borders."""
     tmp = bpy.data.objects.new("_AssetValidator_LOD_tmp", mesh.copy())
     bpy.context.scene.collection.objects.link(tmp)
     try:
+        # Hard edges (sharp, or split custom normals) stay out of the decimation: kept as borders and
+        # protected, they folded a LOD's mesh into edges with 3+ faces (20 on a pistol magazine). On a
+        # game mesh they mostly sit on UV seams, still protected; the normals come back from the source
+        sharp = tmp.data.attributes.get("sharp_edge")
+        if sharp is not None:
+            tmp.data.attributes.remove(sharp)
+        with bpy.context.temp_override(object=tmp):  # an operator: only recent Blender keeps them as an attribute
+            bpy.ops.mesh.customdata_custom_splitnormals_clear()
+        _write_protect_group(tmp)
         planar = tmp.modifiers.new("planar", "DECIMATE")
         planar.decimate_type = "DISSOLVE"
         planar.angle_limit = flat_angle  # only truly flat regions — never changes the silhouette
-        planar.delimit = {"NORMAL", "MATERIAL", "SEAM", "SHARP", "UV"}
+        planar.delimit = {"NORMAL", "MATERIAL", "SEAM", "UV"}
         _bake_into(tmp)
 
         tris = _tri_count(tmp.data)
         if tris > target_tris:
-            _write_protect_group(tmp)
             collapse = tmp.modifiers.new("collapse", "DECIMATE")
             collapse.decimate_type = "COLLAPSE"
             collapse.ratio = target_tris / tris
@@ -122,6 +131,9 @@ def _reduce(mesh: bpy.types.Mesh, target_tris: int, normals_source, surface, cle
             bm.to_mesh(tmp.data)
             bm.free()
 
+        # Collapse leaves loose edges and odd flipped faces behind, and those would block the export
+        delete_loose(tmp, {})
+        fix_normals(tmp, {})
         if normals_source is not None:
             transfer_normals(tmp.data, normals_source)
         return tmp.data
