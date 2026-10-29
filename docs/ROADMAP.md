@@ -39,7 +39,7 @@ Documento para retomar el trabajo desde cualquier chat o dispositivo. Al empezar
 | Ruta | Qué hay |
 |---|---|
 | `blender_asset_validator/checks/` | Un fichero por área (geometry, integrity, topology, shading, uvs, materials, naming, transforms) |
-| `blender_asset_validator/operations/` | Lógica que modifica mallas: cleanup, topology (Clean/Retopo), lod, decimate, heatmap, uvs (islas, métricas y herramientas UV) |
+| `blender_asset_validator/operations/` | Lógica que modifica mallas: cleanup, topology (Clean/Retopo), lod, decimate, heatmap, uvs (islas, métricas y herramientas UV), hard_surface, bake (distancias medidas y normal map) |
 | `blender_asset_validator/operators/` | Botones (`bpy.types.Operator`) que llaman a operations y engine |
 | `blender_asset_validator/core/` | `engine` (carga de config y validación), `roles`, `registry`, `result`, `state`, `steps`, `mesh_utils` |
 | `blender_asset_validator/config/` | `default.json` ← `engines/<motor>.json` ← `presets/<preset>.json` ← `asset_validator.json` junto al .blend |
@@ -53,7 +53,7 @@ Documento para retomar el trabajo desde cualquier chat o dispositivo. Al empezar
 |---|---|---|
 | 0 Cimientos | `feature/phase-0-foundations` | hecha, revisada, testeada (234 tests) y commiteada. Falta: que el usuario pruebe el último zip en su escena y verificar en motor. Arreglos de las pruebas con el Makarov en `bugfix/hard-surface-normals-and-lods` (252 tests) |
 | 1 UVs y texel density | `feature/phase-1-uvs` (desde `bugfix/hard-surface-normals-and-lods`, sin ticket) | hecha, revisada (`/ponytail-review`, `/code-review`), testeada (319 tests) y commiteada. Falta: probarla con interfaz en tu escena y revisar el panel (ver "Siguiente paso" en la fase 1) |
-| 2 Hard surface | `feature/phase-2-hard-surface` (desde `feature/phase-1-uvs`, sin ticket) | primera parte hecha (Hard Surface Prep, Bevel, check de mid-poly), revisada (`/ponytail-review`, `/code-review`), testeada (334 tests) y probada con interfaz y con escenas reales. Sin commitear. Falta: que el usuario la pruebe y decida qué hacer con Auto Unwrap/Prep en escaneos grandes. Quedan el bake helper, el crease para SubD y las trim sheets |
+| 2 Hard surface | `feature/phase-2-hard-surface` (desde `feature/phase-1-uvs`, sin ticket) | primera parte (Hard Surface Prep, Bevel, check de mid-poly) commiteada en `f82c897`. Segunda parte, el bake helper (rol `high`, Bake Normals, Export Bake Pairs), y `--jobs` en el CLI: testeados (368 tests; `check_scene` falla con la escena actual, ver notas) y commiteados el 2026-10-29 **sin revisar**, a petición del usuario, para seguir al día siguiente. Lo siguiente está en "Siguiente paso" de la segunda parte. Quedan el crease para SubD y las trim sheets |
 | 3 Entornos, colisiones, texturas | — | pendiente |
 | 4 Topología y LOD avanzados | — | pendiente |
 | 5 Personajes y orgánico | — | pendiente |
@@ -74,9 +74,10 @@ Todo lo demás depende de esto: el motor fija las reglas y los roles dicen qué 
   - **Godot**: un .glb con `-colonly`, sin LODs.
   - Nombres, padres y transforms se restauran después del export. El operador se llama ahora `asset_validator.export` (antes `export_fbx`).
 - [x] **B3 Velocidad**: numpy en `shading_stats`, en el solape de UVs (rejilla con cada par probado una sola vez, en la celda donde empiezan a solaparse sus cajas, y SAT vectorizado) y en `quad_warps`. Da los mismos resultados que la versión anterior en 16 mallas y 300 sopas de triángulos aleatorias. Números en **Línea base**.
-- [x] **B4 Informe JSON/HTML y CLI** (`cli.py`, `report/generator.py`): `blender -b --factory-startup --python blender_asset_validator/cli.py -- [--engine unreal] [--preset mobile] [--report out.json|out.html] a.blend b.blend …`.
+- [x] **B4 Informe JSON/HTML y CLI** (`cli.py`, `report/generator.py`): `blender -b --factory-startup --python blender_asset_validator/cli.py -- [--engine unreal] [--preset mobile] [--report out.json|out.html] [--jobs N] a.blend b.blend …`.
   - Sin `--engine`, usa el motor guardado en cada .blend.
   - Código de salida 1 si hay errores, comprobado con el Blender de la Store.
+  - `--jobs` (2026-10-29, a petición del usuario): cada fichero se valida en su propio Blender en segundo plano (`bpy.app.binary_path`, el propio `cli.py` con ese fichero solo y `--jobs 1`). Por defecto usa la mitad de los núcleos lógicos. Los threads de `ThreadPoolExecutor` solo esperan a los procesos, sin tocar `bpy`. Un Blender que muere sin escribir su informe (un .blend corrupto) da un error en ese fichero; `--python-exit-code 2` distingue un fallo de Python del exit 1 de "hay errores". Si el binario no se puede lanzar, valida uno detrás de otro. Medido con 8 .blend de una esfera de 260k triángulos cada uno, en 16 núcleos lógicos: de 30,3 s con `--jobs 1` a 10,1 s con `--jobs 8`, con informes idénticos. Lo que no baja es el arranque de cada Blender (unos segundos), así que la ganancia se acerca a N cuanto más pesa cada fichero. **Sin probar con el Blender de la Store**: `bpy.app.binary_path` apunta al ejecutable dentro de `WindowsApps`, que quizá no se pueda lanzar directamente (en ese caso, el `OSError` cae a la vía secuencial).
 - [x] **B5 Excepciones y aprobaciones por objeto** (`core/waivers.py`, `core/steps.py`).
   - La casilla junto a un aviso pide un motivo y lo guarda en el objeto, en `asset_validator_waivers`. La clave es un hash del mensaje con los números y el nombre del objeto en blanco, así que la aceptación sobrevive a que cambie el recuento.
   - Los errores no se pueden aceptar.
@@ -251,6 +252,68 @@ Código: `operations/hard_surface.py`, `operators/hard_surface.py`, `check_weigh
     - El test lee las sharp con su propia función, a propósito, para no depender de la que prueba.
   - Pendiente de decisión: el escaneo de 564k caras (ver arriba).
 
+### Segunda parte: bake helper, criterios (2026-10-29, antes del código)
+
+Alcance: emparejar low y high, hornear la normal map en Blender y exportar los pares para Substance Painter y Marmoset. Quedan para después el crease para SubD (crear el `_high`) y las trim sheets. Cada criterio es un test en `tests/check_bake.py`.
+
+- FR-1: **emparejado por nombre**, con la regla de "Match by Mesh Name" de Substance Painter, que distingue mayúsculas ([Adobe](https://experienceleague.adobe.com/en/docs/substance-3d/bakers/features/matching-by-name)). El low es un asset `Name` o `Name_low`. Sus high son `Name_high`, `Name_high_<lo que sea>` y `Name_high.NNN` (lo que da duplicar en Blender). Los sufijos están en `bake.low_suffix` y `bake.high_suffix`.
+- FR-2: **rol `high`**. Un high no pasa ningún check y no se exporta al motor. Prep, Auto Unwrap, Set Texel Density y Generate LODs se lo saltan. Retopologize y Clean Topology no, porque retopologizar un high es justo cómo se hace un low. La única excepción es `check_bake_pairs` (paso 1): un high sin low da un aviso que dice que no se va a exportar. Es una errata, o un asset que por casualidad acaba en `_high` (`Tower_high`) y que, si no, desaparecería del export sin decir nada. Añadido al revisar el código, antes de los tests finales.
+- FR-3: **distancias medidas, no adivinadas**. Con un BVH del low evaluado, se mide la distancia con signo de los vértices del high evaluado a la superficie del low (hasta 100k vértices; si hay más, una muestra). La extrusión del cage es lo que más sale el high por fuera, y la distancia de rayo, la extrusión más lo que más se mete por dentro. Las dos llevan un 10 % de margen más 1 mm por metro de diagonal del low. Si la mitad de los vértices del high quedan a más del 10 % de la diagonal, el par no está superpuesto y no se hornea (añadido tras la prueba con la escena real, ver notas).
+- FR-4: **Bake Normals** (`asset_validator.bake_normals`). Normal map en espacio tangente sobre UV0 (`uv_layer`, no la capa activa), con Cycles a 16 muestras. El canal verde sale de `bake.normal_g` (`NEG_Y` en Unreal y `POS_Y` en el resto), el margen es la mitad de `uv.min_island_gap_px` (el relleno de las islas se junta en el centro del hueco) y el tamaño, `uv.texture_size`. La imagen se llama `Name_N`, es Non-Color y se guarda como PNG en `bake.path`. Volver a hornear reutiliza la imagen. Los materiales, el motor de render y las muestras quedan como estaban.
+- FR-5: **Triangulate** (con `keep_custom_normals`) antes del bake y del export de pares, si el low no tiene uno activo. Así el bake, Painter y el motor ven los mismos triángulos: si cada uno triangula los quads no planos a su manera, el espacio tangente cambia.
+- FR-6: **Export Bake Pairs** (`asset_validator.export_bake_pairs`). Escribe `<Name>_low.fbx` con los assets seleccionados, renombrados `X_low`, y `<Name>_high.fbx` con sus high. En los nombres, `.` pasa a `_`, porque Painter solo empareja si tras el sufijo viene `_`. Usa los ejes y la escala del perfil, y después restaura los nombres.
+- FR-7: los dos botones van en el paso "Shading & UVs" y en el modo normal.
+- NFR-1: medir las distancias con un high de 1M de vértices cuesta menos de 1 s.
+
+| AC | Requisito | Dado / cuando / entonces |
+|---|---|---|
+| 1 | FR-1 | `Box` se empareja con `Box_high`, `Box_high_bolts` y `Box_high.001`, pero no con `Box_highlight` ni con `Box_HIGH`. `Crate_low` se empareja con `Crate_high` |
+| 2 | FR-2 | Un high con ngons y sin material no da ningún resultado al validar. Export escribe el asset sin el high. Prep y Generate LODs no lo tocan |
+| 3 | FR-3 | Un high biselado y subdividido, 3 cm más arriba que el low: la extrusión cubre los 3 cm sin pasar de 5, y el rayo llega a la parte de abajo, que queda por dentro |
+| 4 | FR-4 | Un low cubo plano con un high cubo plano 2 cm por fuera: la normal map es plana (0,5; 0,5; 1) en cada píxel de isla. Con el high biselado, los píxeles del borde se inclinan, y el verde de Unreal es 1 − el de Unity. El PNG está en disco con el tamaño del perfil. Los materiales no tienen nodos de más, y el motor y las muestras vuelven a ser los de antes |
+| 5 | FR-5 | Tras hornear, la pila acaba en Triangulate → Weighted Normal, y hornear otra vez no añade otro Triangulate |
+| 6 | FR-6 | Dos FBX. Al reimportarlos, los nombres son `Box_low`, `Box_high`, `Box_high_bolts` y `Box_high_001`, y los de la escena siguen como estaban |
+| 7 | FR-7 | Los operadores se registran y se ejecutan desde `bpy.ops` |
+| 8 | NFR-1 | `ray_distances` con un high de 1M de vértices tarda menos de 1 s |
+
+Casos límite: un asset sin high se salta y la línea lo dice. Si al low le faltan UVs o tiene un slot sin material, la línea lo dice y no se hornea nada. Sin nada seleccionado, se cancela. Con el .blend sin guardar y `bake.path` relativo, se cancela (como el export).
+
+Fuera de alcance: AO, curvatura e ID (Painter y Marmoset los hornean con los pares exportados), conectar la normal map al material, un cage editable (`cage_extrusion` infla el low por dentro de Blender, sin crear ningún objeto) y una textura por material (es una imagen por low, para todos sus materiales).
+
+### Notas de la segunda parte, útiles para retomar
+
+Código: `operations/bake.py` (`ray_distances`, `bake_normals`, `add_triangulate`), `operators/bake.py` (Bake Normals), `ASSET_VALIDATOR_OT_export_bake_pairs` y `_renamed` en `operators/export.py`, `high_owner`/`bake_base`/`highs_of` en `core/roles.py`, `check_bake_pairs` en `checks/naming.py` y la sección `bake` de `config/default.json` (y `normal_g` en `engines/unreal.json`). Tests: `tests/check_bake.py`, 32 tests. Se comprobó mutando el código que fallan sin `uv_layer` (con la capa de lightmap activa, se horneaba en UV1) y sin el cambio de `.` a `_` en los nombres.
+
+- **API de 5.2, comprobada antes del código**:
+  - `object.bake` funciona sin interfaz, con `temp_override` (`selected_objects` y `active_object`), aunque el high esté oculto con `hide_set`.
+  - `uv_layer` elige la capa de UV en la que se hornea.
+  - `cage_extrusion` no deja costuras en las aristas duras: un cubo plano horneado desde un cubo plano 2 cm más grande sale plano en cada píxel.
+  - Un Triangulate añadido con `modifiers.new` queda delante de un Weighted Normal fijado con `use_pin_to_last`.
+  - Con un low smooth y un high plano, la normal map sale con degradados, y es correcto: compensa el sombreado suave del low.
+- **Escena real** (`Addon_Test.blend`, el capó del Audi, 106k caras, con sus LOD1 de 64k y LOD3 de 18k como lows; sin guardar):
+  - El primer intento horneó basura con un cage de 8,3 m en un coche de 5,45 m. La medición era correcta: el usuario tiene los LODs en fila, a −2,8, −5,3 y −7,7 m en X, así que el high no estaba encima de ningún low (mediana de 0,8 a 1,5 m). De ahí la comprobación de FR-3: ahora el par se rechaza con la distancia y el porcentaje.
+  - Con el LOD encima del original: cage de 5 cm (LOD1) y 11 cm (LOD3), y rayo de 10 y 23 cm. Cada bake tarda unos 5 s a 2048 px. `ray_distances` tarda 0,14 s con 154k vértices de high.
+  - La normal map llena la textura, pero mezclada, porque las UVs del coche son de tiling y se solapan (`check_uvs` ya lo avisa). Con este asset no se puede juzgar la calidad del bake. Falta probarlo con un par high/low de verdad, hecho para hornear.
+- **`check_scene.py` falla con la escena actual, y no por el bake helper**. El 2026-10-29 a las 21:14 el usuario metió en `Addon_Test.blend` la Rank-3 Police Unit (`test_assets/rank-3-police-unit`): 53 mallas y 3,4M de caras. La malla más grande es `suit_zipper` (1,46M de caras, de 34k a 92k islas UV). Fallan:
+  - Auto Unwrap (172 s), Prep (232 s) y las islas colapsadas (6,4 %): es lo ya anotado del escaneo de 564k caras, sin decidir.
+  - Set Texel Density: 2110 px/m no caben en 4096.
+  - La validación completa tardó 1.790 s en `check_scene`, pero repetida sola, con todas las mallas en una llamada, tarda **309 s** (289 s sumando los checks uno a uno). Aquella vuelta compitió por la CPU, seguramente con el Blender del usuario, que estaba abierto con la escena. Aun así, 309 s se pasan del límite lineal de 258 s, y es el primer asset real que pide acelerar la validación (ver **Línea base**).
+  - Medido check a check y malla a malla, la suma es de unos 292 s. El 80 % se va en los checks de UV: `check_uvs` tarda 138 s, de los que **131 s son una sola malla** (`suit_zipper_suit_zipper_Cube.001`, 1,46M de caras y 34k islas; en `tests/bench.py`, 1M de triángulos tardan 5,4 s), y `check_uv_layout` tarda 114 s (48 s en esa misma malla). Les siguen `check_normals` (16 s) y `check_shading` (14 s), y el resto suma menos de 11 s. El siguiente paso es perfilar el solape de UVs (`check_uvs`) en esa malla: algo crece más que lineal con las islas o con el tamaño de su rejilla.
+  - Sospecha, sin perfilar: `_any_triangles_overlap` (`operations/uvs.py`) da una pasada sobre todo el array por cada vuelta del bucle `for gap`, y da tantas vueltas como triángulos tenga la celda más llena. La rejilla cubre los límites de todas las UVs, y esa malla tiene 619 islas fuera de 0–1, así que casi todos los triángulos caerían en pocas celdas: el coste sería (triángulos de la celda más llena × total). Si es eso, la rejilla debería ajustarse a donde están los triángulos (percentiles o una rejilla por isla), no a los extremos.
+  - `--jobs` en el CLI no lo arregla: esa malla está en un solo fichero.
+
+### Siguiente paso (para retomar, 2026-10-30)
+
+1. `/ponytail-review` y `/code-review` de lo commiteado sin revisar: el bake helper (`operations/bake.py`, `operators/bake.py`, Export Bake Pairs y `_renamed` en `operators/export.py`, el rol `high` en `core/roles.py`, `check_bake_pairs`) y `--jobs` en `cli.py`. Lo que salga, con su test.
+2. Perfilar y arreglar `check_uvs` en `suit_zipper_suit_zipper_Cube.001` de `Addon_Test.blend` (131 s; ver la sospecha arriba). Después, volver a medir la validación completa de la escena (309 s, con el Blender del usuario cerrado) y actualizar la **Línea base**.
+3. `check_scene.py` con la escena actual: además de la validación, fallan Auto Unwrap, Prep y Set Texel Density en `suit_zipper` (1,46M de caras). Queda decidir, con el usuario, qué hacer con Auto Unwrap/Prep en mallas enormes (ver la primera parte) y si `check_scene` debe probar las herramientas en la malla más grande o en una de tamaño "de juego".
+4. Que el usuario pruebe Bake Normals y Export Bake Pairs con interfaz (zip reconstruido el 2026-10-29), con un par high/low de verdad y UV0 sin solapes.
+5. Problemas conocidos de Hard Surface Prep, citados en el mensaje del commit `f82c897` y que no estaban en este fichero. Los diagnosticó otra sesión y no se han vuelto a comprobar:
+   - El Bevel se colapsa con el *Clamp Overlap* global.
+   - Se biselan aristas sharp que están en zonas planas.
+   - `shade_smooth_by_angle` ignora el ángulo en mallas con normales custom.
+6. El resto de la fase 2: el crease para SubD (crear el `_high` desde el low) y las trim sheets.
+
 ### Plan completo
 
 - [x] **Hard Surface Prep** en un clic, encadenando operadores nativos:
@@ -262,8 +325,8 @@ Código: `operations/hard_surface.py`, `operators/hard_surface.py`, `check_weigh
   6. Modificador Weighted Normal con Keep Sharp.
 - [ ] Support loops: [x] bevel en las aristas sharp con N segmentos para mid-poly (sin `harden_normals`: el Weighted Normal lo cubre); [ ] crease para SubD, que va con el bake helper.
 - [x] Check de mid-poly: si el perfil lo pide, tiene que haber Weighted Normal.
-- [ ] **Bake helper**:
-  - Empareja `_high` y `_low` por nombre y crea el cage solo (copia inflada) o calcula la distancia de rayo a partir del tamaño.
+- [x] **Bake helper** (segunda parte, arriba):
+  - Empareja `_high` y `_low` por nombre y mide el cage (`cage_extrusion`) y la distancia de rayo a partir de las mallas.
   - Hornea con `object.bake` (`use_selected_to_active`, `cage_extrusion`, `normal_g`): `NEG_Y` en Unreal (DirectX), `POS_Y` en Unity y Godot (OpenGL).
   - Exporta pares con nombres compatibles con Substance Painter y Marmoset.
 - [ ] Trim sheets: mapear caras a las franjas de una hoja.
@@ -319,6 +382,7 @@ En la máquina de desarrollo no hay Unreal ni Unity. Se ha comprobado la estruct
 - [ ] **Unreal**: ejes y escala (`axis_forward`/`axis_up` de `default.json`) y la advertencia de smoothing groups (el perfil usa `mesh_smooth_type: FACE`).
 - [ ] **Unity**: ¿un FBX con `_LOD0…n` crea el LOD Group? ¿La receta del perfil (`-Z`/`Y`, `FBX_SCALE_ALL`, `bake_space_transform`) importa con rotación 0 y escala 1?
 - [ ] **Godot**: ¿el .glb importa `-colonly` como StaticBody3D y genera los LODs solo?
+- [ ] **Substance Painter y Marmoset** (tampoco están instalados): ¿"Match by Mesh Name" empareja los `X_low`/`X_high` de Export Bake Pairs por el nombre del objeto del FBX? La regla de los sufijos sale de la documentación de Adobe, y la de Marmoset, de herramientas de terceros que dicen seguirla. ¿Las normal maps de Bake Normals se ven sin costuras en Unreal (`NEG_Y`) y en Unity (`POS_Y`) con el FBX triangulado?
 
 ## Línea base de rendimiento
 

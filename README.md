@@ -28,6 +28,7 @@ By default, each selected asset is exported to its own file, together with its L
 | **Shading** | Hard edges off UV seams, GPU vertex cost |
 | **Mid-poly** | Assets without a Weighted Normal modifier, only when `hard_surface.require_weighted_normal` is set. **Fix** adds one |
 | **Collisions** | Collision meshes named after a mesh that doesn't exist (they'd be left out) |
+| **Bake pairs** | High-poly meshes (`_high`) with no low-poly to bake onto: a typo, or an asset whose name happens to end in the suffix (it would be left out of the checks and the export) |
 | **Materials** | Empty material slots, Image Texture nodes with no image or missing file |
 
 Each failed check shows the offending object, a description of the problem, and a fix hint; many have **Fix** and **Show** (opens Edit Mode with the culprits selected). A warning that is fine for this asset can be **accepted** with the checkbox next to it: the reason is stored on the object and the report lists it as accepted. Errors can't be accepted.
@@ -89,19 +90,30 @@ All three rewrite UV0 of the selected meshes, so they belong before baking or te
 - **Auto Unwrap** (hard surface): seams on edges marked sharp (or, if none are marked, edges bent more than `topology.feature_angle`), on material borders and open borders; unwrap with Minimum Stretch where Blender has it (4.3+, otherwise Conformal; islands Minimum Stretch collapses to zero area get Conformal) and the `uv_importance` vertex group as weights if the object has one; every island that still stretches past the limits is cut along its most bent path of edges (concave ones first, where the seam hides) and only those islands are unwrapped again; then packed to fill 0–1 with the profile's margin (dense layouts end up with less margin; the gap check says so). Made for hard surface: on organic or scanned meshes the angle seams give thousands of small islands. *Straighten Quad Islands* (redo panel) runs Follow Active Quads on islands made only of quads.
 - **Set Texel Density** scales every island to one density (the profile's, or the one typed in the redo panel) and packs them without rescaling; it says so when they don't fit in one texture. *Copy from Active* gives the other selected meshes the active object's density.
 
+### Baking
+
+High-poly meshes pair with their low-poly asset by name, the way Substance Painter's *match by mesh name* does it (case-sensitive): `Chair` or `Chair_low` bakes from `Chair_high`, `Chair_high_bolts`, `Chair_high.001`... (`bake.low_suffix` / `bake.high_suffix`). High meshes skip every check (one with no low gets a *Bake pairs* warning), are never exported to the engine, and Prep, the UV tools and Generate LODs leave them alone. Retopologize still works on them: that's how a low is made from a sculpt.
+
+- **Bake Normals** bakes a tangent-space normal map from each selected asset's high meshes into its UV0 with Cycles, and saves it as `<name>_N.png` (Non-Color, `uv.texture_size`) in `bake.path` (`//bakes/`). The cage and the ray distance are measured, not guessed: the high's vertices are measured against the low's surface, the cage extrusion covers the farthest point outside it and the rays reach the deepest point inside (plus a 10% margin). The green channel follows the Engine (`bake.normal_g`: DirectX `NEG_Y` for Unreal, OpenGL `POS_Y` otherwise), and the padding is half of `uv.min_island_gap_px`, so the paddings of two islands meet in the middle of the gap. One image per low, shared by all its materials; baking again overwrites it. A high that isn't on top of its low (half its vertices farther than 10% of the low's size, e.g. a low laid beside it) is refused instead of baked through a cage metres thick. Bake onto a clean UV0: islands that overlap (the *UVs* check) share their texels.
+- **Export Bake Pairs** writes the selected assets to `<name>_low.fbx`, renamed `X_low`, and their high meshes to `<name>_high.fbx`, for baking in Substance Painter or Marmoset Toolbag with matching by name. A dot after the suffix becomes `_` (Painter pairs `Chair_high_001` but not `Chair_high.001`), and the scene names are put back afterwards.
+
+Both add a Triangulate modifier to the low first (keeping custom normals, before a pinned Weighted Normal), so the baker and the engine see the same triangles: each one triangulates a non-planar quad its own way, and the tangent basis changes with the diagonal.
+
 ### Batch validation (CI)
 
 ```powershell
-blender -b --factory-startup --python blender_asset_validator/cli.py -- --engine unreal --report report.html a.blend b.blend
+blender -b --factory-startup --python blender_asset_validator/cli.py -- --engine unreal --report report.html [--jobs 4] a.blend b.blend
 ```
 
 Validates every mesh in each file with the engine and preset saved in it (or the ones given), prints the report, writes a `.json` or `.html` report, and exits with 1 if any file has errors. `--factory-startup` keeps an installed copy of the addon from loading next to this one.
+
+Several files are validated at once, each in its own background Blender: `--jobs N` (default: half the logical cores, about one per physical core; each Blender holds its whole scene in memory, so lower it for heavy scenes). The checks are single-threaded Python and Blender's data isn't thread-safe, which is why it's processes, not threads. The reports and the console output keep the order of the files, and a file whose Blender dies (a corrupt .blend) fails on its own without stopping the others. `--jobs 1` validates them one after another in the same Blender.
 
 ### Mesh optimization
 
 All three work on the selected meshes and can be undone.
 
-- **Generate LODs** bakes `_LOD1..n` meshes into the `LODs` collection, each one from the previous level: planar dissolve of flat areas, then a collapse to `ratio x` the source triangles that removes open borders, seams and UV/material borders last, then loose geometry and stray flipped faces are cleaned (they would block the export) and the source's normals are transferred, hard edges included. Hard edges aren't protected on their own: on a game mesh they sit on UV seams, and protecting them as well folded the mesh into edges with 3+ faces. Set `lod.clean_topology` to run Clean Topology on every level (quads instead of triangles).
+- **Generate LODs** bakes `_LOD1..n` meshes of the selected assets (not of LODs, collision or high-poly meshes) into the `LODs` collection, each one from the previous level: planar dissolve of flat areas, then a collapse to `ratio x` the source triangles that removes open borders, seams and UV/material borders last, then loose geometry and stray flipped faces are cleaned (they would block the export) and the source's normals are transferred, hard edges included. Hard edges aren't protected on their own: on a game mesh they sit on UV seams, and protecting them as well folded the mesh into edges with 3+ faces. Set `lod.clean_topology` to run Clean Topology on every level (quads instead of triangles).
 - **Clean Topology** edits the mesh in place without changing its shape or UVs: triangles to quads, flat edge loops dissolved (only whole loops on straight, flat strips, so quads stay quads), and the free vertices relaxed along the original surface for even edge flow. Borders, seams, sharp/hard edges and material borders are pinned. Relax is skipped on objects with a Subdivision/Multires modifier or shape keys. On a LOD it relaxes onto the full-resolution source.
 - **Retopologize** creates `<name>_Retopo`, an all-quad mesh whose edge flow follows the curvature (Blender's QuadriFlow), and hides the original; the mesh must be manifold with consistent normals, otherwise it reports the failure and creates nothing. Materials, UVs and normals are resampled from the original and seams are marked at UV island borders; re-unwrap if the islands need to be cleaner. Triangle ratio and symmetry are in the redo panel (F9).
 
@@ -185,6 +197,8 @@ UV checks measure UV0 (the first UV map, the one the engine's materials sample) 
 
 `roles.collision` and `roles.socket` are regexes on object names; the collision one names the mesh it belongs to with a `(?P<owner>...)` group.
 
+`bake.normal_g` is the normal map's green channel (`POS_Y` OpenGL, `NEG_Y` DirectX; the Unreal profile sets it), `bake.path` the folder for the baked maps and the bake pair files.
+
 Two presets are included:
 
 | Preset | Budget | Ngons | Texel density |
@@ -239,7 +253,7 @@ blender_asset_validator/
 |-- core/
 |   |-- registry.py          # @register_check decorator
 |   |-- engine.py            # Loads config and runs checks
-|   |-- roles.py             # asset / LOD / collision / socket, from the engine's name patterns
+|   |-- roles.py             # asset / LOD / collision / socket / high, from the name patterns
 |   |-- steps.py             # Guided steps and per-object approvals
 |   |-- waivers.py           # Accepted warnings
 |   |-- result.py            # CheckResult dataclass + Severity enum
@@ -254,6 +268,7 @@ blender_asset_validator/
 |   |-- uvs.py               # UV overlap, texel density, stretch, gaps, 0-1, lightmap UV
 |   `-- materials.py
 |-- operations/
+|   |-- bake.py              # Measured cage and ray distances, normal map bake, Triangulate
 |   |-- cleanup.py           # Fixers
 |   |-- hard_surface.py      # Hard Surface Prep, Bevel and Weighted Normal modifiers
 |   |-- heatmap.py           # Per-face heatmaps
@@ -266,7 +281,8 @@ blender_asset_validator/
 |   |-- lod.py, topology.py  # Generate LODs, Clean Topology, Retopologize
 |   |-- uvs.py               # Auto Unwrap, Set Texel Density
 |   |-- hard_surface.py      # Hard Surface Prep
-|   `-- export.py            # Per-engine export
+|   |-- bake.py              # Bake Normals
+|   `-- export.py            # Per-engine export, Export Bake Pairs
 |-- ui/
 |   `-- panel.py             # N-panel UI
 `-- report/
@@ -287,7 +303,7 @@ pip install fake-bpy-module-4.3
 
 ### Tests
 
-`tests/check_*.py` build their own scenes and run headless in Blender (validation and export, LODs, topology, UVs, hard surface, review regressions). `check_scene.py` also opens a real scene that is not committed: `Addon_Test.blend` at the repo root, or the one in `$env:AV_SCENE` (skipped if it's missing, never saved). From the repo root:
+`tests/check_*.py` build their own scenes and run headless in Blender (validation and export, LODs, topology, UVs, hard surface, baking, review regressions). `check_scene.py` also opens a real scene that is not committed: `Addon_Test.blend` at the repo root, or the one in `$env:AV_SCENE` (skipped if it's missing, never saved). From the repo root:
 
 ```powershell
 .\tests\run.ps1                      # all checks

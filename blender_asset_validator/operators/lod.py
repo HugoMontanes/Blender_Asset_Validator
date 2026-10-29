@@ -4,6 +4,7 @@ from . import ObjectModeOnly
 from ..core.engine import load_config
 from ..operations.lod import generate_lods
 from ..ui.redraw import redraw_view3d
+from .uvs import asset_meshes
 
 
 class ASSET_VALIDATOR_OT_generate_lods(ObjectModeOnly, bpy.types.Operator):
@@ -14,13 +15,10 @@ class ASSET_VALIDATOR_OT_generate_lods(ObjectModeOnly, bpy.types.Operator):
 
     def execute(self, context):
         config = load_config()
-        objects = [
-            obj for obj in context.selected_objects
-            if obj.type == "MESH" and not obj.get("asset_validator_lod", False)
-        ]
+        objects = asset_meshes(context.selected_objects, config)  # not LODs, collision or high-poly meshes
 
         if not objects:
-            self.report({"ERROR"}, "Select at least one source mesh object first")
+            self.report({"ERROR"}, "Select at least one asset mesh first")
             return {"CANCELLED"}
 
         created = generate_lods(objects, config)

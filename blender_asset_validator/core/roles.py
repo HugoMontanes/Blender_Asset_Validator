@@ -1,6 +1,7 @@
 """What each object is to the target engine, from the name patterns of the
-engine profile (config "roles"): an asset, a generated LOD, a collision mesh
-or a socket. Checks run per role, and an asset is exported with its parts."""
+engine profile (config "roles"): an asset, a generated LOD, a collision mesh,
+a socket or a high-poly bake source (config "bake"). Checks run per role, and
+an asset is exported with its parts."""
 import re
 from typing import List, Optional
 
@@ -12,6 +13,8 @@ def role(obj: bpy.types.Object, config: dict) -> str:
         return "lod"
     if obj.type == "MESH" and collision_owner(obj, config) is not None:
         return "collision"
+    if obj.type == "MESH" and high_owner(obj.name, config) is not None:
+        return "high"
     pattern = config.get("roles", {}).get("socket")
     if obj.type == "EMPTY" and pattern and re.match(pattern, obj.name):
         return "socket"
@@ -35,6 +38,27 @@ def collisions_of(obj: bpy.types.Object, config: dict) -> List[bpy.types.Object]
 
 def sockets_of(obj: bpy.types.Object, config: dict) -> List[bpy.types.Object]:
     return [c for c in obj.children if role(c, config) == "socket"]
+
+
+def high_owner(name: str, config: dict) -> Optional[str]:
+    """Base name of the low a high-poly mesh bakes onto, None if it isn't one. Substance Painter's
+    match by mesh name: Chair_high, Chair_high_bolts -> Chair, case-sensitive. Chair_high.001
+    too: Blender's duplicates (Export Bake Pairs writes it Chair_high_001)."""
+    suffix = config.get("bake", {}).get("high_suffix", "_high")
+    match = re.match(f"(.+){re.escape(suffix)}([._].*)?$", name) if suffix else None
+    return match.group(1) if match else None
+
+
+def bake_base(obj: bpy.types.Object, config: dict) -> str:
+    """A low's name without its low suffix (Chair_low -> Chair): what its highs are named after."""
+    suffix = config.get("bake", {}).get("low_suffix", "_low")
+    return obj.name[:-len(suffix)] if suffix and obj.name.endswith(suffix) else obj.name
+
+
+def highs_of(obj: bpy.types.Object, config: dict) -> List[bpy.types.Object]:
+    base = bake_base(obj, config)
+    return [o for o in bpy.context.scene.objects
+            if o.type == "MESH" and high_owner(o.name, config) == base and role(o, config) == "high"]
 
 
 def renamed_collision(obj: bpy.types.Object, owner: str, config: dict) -> str:

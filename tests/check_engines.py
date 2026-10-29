@@ -269,6 +269,21 @@ try:
     code = cli.main(["--report", html_path, "--engine", "unreal", ok_blend, bad_blend])
     check("cli: a failing file gives exit 1", code == 1)
     check("cli: html lists both files", all(name in open(html_path, encoding="utf-8").read() for name in ("ok.blend", "bad.blend")))
+    def files_of(*argv):
+        code = cli.main(["--report", json_path, *argv])
+        return code, json.load(open(json_path))["files"]
+    parallel = files_of("--jobs", "2", "--engine", "unreal", bad_blend, ok_blend)
+    sequential = files_of("--jobs", "1", "--engine", "unreal", bad_blend, ok_blend)
+    check("cli --jobs: two background Blenders give the same reports, in the files' order, as one after another",
+          parallel == sequential and [f["file"] for f in parallel[1]] == [bad_blend, ok_blend] and parallel[0] == 1,
+          f"{[(f['file'], f['errors']) for f in parallel[1]]} vs {[(f['file'], f['errors']) for f in sequential[1]]}")
+    corrupt = os.path.join(WORK, "corrupt.blend")
+    with open(corrupt, "wb") as f:
+        f.write(b"not a blend file")
+    code, files = files_of("--jobs", "2", corrupt, ok_blend)
+    check("cli --jobs: a corrupt .blend fails on its own, the other file is still validated",
+          code == 1 and not files[0]["passed"] and "before writing a report" in files[0]["results"][0]["message"] and files[1]["passed"],
+          str([(f["file"], f["passed"], f["results"][:1]) for f in files]))
 
     bav.unregister()
     say("DONE")

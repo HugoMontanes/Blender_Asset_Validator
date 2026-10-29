@@ -29,6 +29,14 @@
     "require_weighted_normal": false,
     "require_weighted_normal_description": "Mid-poly: every asset needs a Weighted Normal modifier (Hard Surface Prep adds one)"
   },
+  "bake": {
+    "low_suffix": "_low",
+    "high_suffix": "_high",
+    "suffix_description": "Substance Painter's match by mesh name: Chair or Chair_low bakes from Chair_high, Chair_high_bolts... (case-sensitive). High meshes skip the checks and the export",
+    "normal_g": "POS_Y",
+    "normal_g_description": "Normal map green channel: POS_Y OpenGL (Unity, Godot, Blender), NEG_Y DirectX (Unreal). Set by the Engine dropdown",
+    "path": "//bakes/"
+  },
   "optimization": {
     "merge_by_distance": true,
     "merge_distance": 0.0001,

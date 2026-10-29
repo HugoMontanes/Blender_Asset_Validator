@@ -7,8 +7,8 @@ APPROVED = "asset_validator_approved"  # object property: indices of the steps a
 
 # (label, what the artist should look at, check function names; None = every check)
 STEPS = [
-    ("Object setup", "Applied transforms, names, collisions, materials and textures",
-     {"check_transforms", "check_naming", "check_collisions", "check_materials"}),
+    ("Object setup", "Applied transforms, names, collisions, high-poly pairs, materials and textures",
+     {"check_transforms", "check_naming", "check_collisions", "check_bake_pairs", "check_materials"}),
     ("Mesh integrity", "Flipped normals, loose and non-manifold geometry, zero-area faces",
      {"check_normals", "check_manifold", "check_degenerate_faces"}),
     ("Topology", "Ngons, warped quads, poles and slivers. Clean Topology / Retopologize live here",

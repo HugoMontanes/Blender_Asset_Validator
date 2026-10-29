@@ -39,7 +39,7 @@ for segments in (64, 256, 512):
     total = 0.0
     for check in get_checks():
         if "asset" not in check.roles:
-            continue  # check_collisions: collision meshes only
+            continue  # check_collisions, check_bake_pairs: collision and high-poly meshes only
         start = time.perf_counter()
         check([obj], config)
         elapsed = time.perf_counter() - start

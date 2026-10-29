@@ -13,7 +13,8 @@ from .operators.lod import ASSET_VALIDATOR_OT_generate_lods
 from .operators.topology import ASSET_VALIDATOR_OT_clean_topology, ASSET_VALIDATOR_OT_retopologize
 from .operators.uvs import ASSET_VALIDATOR_OT_set_texel_density, ASSET_VALIDATOR_OT_auto_unwrap
 from .operators.hard_surface import ASSET_VALIDATOR_OT_hard_surface_prep
-from .operators.export import ASSET_VALIDATOR_OT_export
+from .operators.bake import ASSET_VALIDATOR_OT_bake_normals
+from .operators.export import ASSET_VALIDATOR_OT_export, ASSET_VALIDATOR_OT_export_bake_pairs
 from .ui.panel import ASSET_VALIDATOR_PT_main
 from .core.engine import ENGINE_ITEMS, PRESET_ITEMS
 from .core.state import clear_results
@@ -35,7 +36,9 @@ _CLASSES = (
     ASSET_VALIDATOR_OT_set_texel_density,
     ASSET_VALIDATOR_OT_auto_unwrap,
     ASSET_VALIDATOR_OT_hard_surface_prep,
+    ASSET_VALIDATOR_OT_bake_normals,
     ASSET_VALIDATOR_OT_export,
+    ASSET_VALIDATOR_OT_export_bake_pairs,
     ASSET_VALIDATOR_PT_main,
 )
 
