@@ -11,6 +11,7 @@ from .operators.fix import (
 from .operators.heatmap import ASSET_VALIDATOR_OT_show_heatmap, ASSET_VALIDATOR_OT_clear_heatmap
 from .operators.lod import ASSET_VALIDATOR_OT_generate_lods
 from .operators.topology import ASSET_VALIDATOR_OT_clean_topology, ASSET_VALIDATOR_OT_retopologize
+from .operators.uvs import ASSET_VALIDATOR_OT_set_texel_density, ASSET_VALIDATOR_OT_auto_unwrap
 from .operators.export import ASSET_VALIDATOR_OT_export
 from .ui.panel import ASSET_VALIDATOR_PT_main
 from .core.engine import ENGINE_ITEMS, PRESET_ITEMS
@@ -30,6 +31,8 @@ _CLASSES = (
     ASSET_VALIDATOR_OT_generate_lods,
     ASSET_VALIDATOR_OT_clean_topology,
     ASSET_VALIDATOR_OT_retopologize,
+    ASSET_VALIDATOR_OT_set_texel_density,
+    ASSET_VALIDATOR_OT_auto_unwrap,
     ASSET_VALIDATOR_OT_export,
     ASSET_VALIDATOR_PT_main,
 )

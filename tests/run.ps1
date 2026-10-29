@@ -9,7 +9,8 @@ param(
 if (-not $Blender) {
     $onPath = Get-Command blender -ErrorAction SilentlyContinue
     $store = Get-ChildItem "$env:LOCALAPPDATA\Microsoft\WindowsApps\BlenderFoundation.Blender_*\blender-launcher.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($onPath) { $Blender = $onPath.Source } elseif ($store) { $Blender = $store.FullName }
+    $installed = Get-ChildItem "$env:ProgramFiles\Blender Foundation\Blender *\blender.exe" -ErrorAction SilentlyContinue | Sort-Object FullName -Descending | Select-Object -First 1
+    if ($onPath) { $Blender = $onPath.Source } elseif ($store) { $Blender = $store.FullName } elseif ($installed) { $Blender = $installed.FullName }
     else { Write-Error "Blender not found: pass -Blender or set `$env:BLENDER"; exit 2 }
 }
 

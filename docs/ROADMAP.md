@@ -4,8 +4,8 @@ Documento para retomar el trabajo desde cualquier chat o dispositivo. Al empezar
 
 ## Cómo retomar
 
-1. Mira en **Estado** la fase en curso y su rama: `git switch <rama>`.
-2. Tests: `.\tests\run.ps1` (PowerShell). Ejecuta cada `tests/check_*.py` dentro de Blender, sin interfaz, y deja la salida en `tests/_out/`. `.\tests\run.ps1 check_lods` ejecuta solo uno. Todos tienen que pasar antes de un commit.
+1. Mira en **Estado** la fase en curso y su rama: `git switch <rama>`. Nada está fusionado en `main` (que no tiene ni la fase 0): cada rama sale de la anterior, `feature/phase-0-foundations` → `bugfix/hard-surface-normals-and-lods` → `feature/phase-1-uvs`. La siguiente fase sale de la última.
+2. Tests: `.\tests\run.ps1` (PowerShell; encuentra Blender en PATH, en la Store o en `Program Files\Blender Foundation`). Ejecuta cada `tests/check_*.py` dentro de Blender, sin interfaz, y deja la salida en `tests/_out/`. `.\tests\run.ps1 check_lods` ejecuta solo uno. Todos tienen que pasar antes de un commit.
 3. Velocidad: `tests/bench.py` mide cada check con mallas de 16k, 260k y 1M de triángulos. `run.ps1` no lo ejecuta; el comando está en su cabecera. Se compara con la **Línea base**.
 4. Lee **Convenciones** antes de tocar código.
 
@@ -30,14 +30,16 @@ Documento para retomar el trabajo desde cualquier chat o dispositivo. Al empezar
   - Un check es una función `@register_check` dentro de `checks/`. Devuelve `CheckResult`, con `fix` (aplica la corrección) y `select` (abre Edit Mode con lo problemático seleccionado) opcionales. Los pasos del modo guiado agrupan checks por nombre de función (`core/steps.py`).
   - En Edit Mode `mesh.polygons` está desactualizado y `bmesh.to_mesh` falla, por eso los operadores que modifican mallas heredan `ObjectModeOnly`.
   - Con el Blender de la Microsoft Store hay que lanzar con `Start-Process -Wait`, porque el launcher devuelve el control antes de que Blender termine.
+  - **Después de `mode_set` hay que volver a pedir `mesh.uv_layers[i]`** (y cualquier dato de la malla): la referencia de antes apunta a datos viejos, sin dar error. Ver `set_texel_density`.
+  - Nada que reempaquete o desenvuelva UVs va en un **Fix**: Fix All lo aplicaría a assets ya texturizados y rompería sus texturas. Esas operaciones son herramientas aparte.
   - QuadriFlow falla con geometría non-manifold y borra las piezas finas. `operations/topology.py` lo resuelve remallando pieza a pieza y reparando antes (`_repair_for_quadriflow`, `_patch_lost_surface`).
 
 ## Dónde está cada cosa
 
 | Ruta | Qué hay |
 |---|---|
-| `blender_asset_validator/checks/` | Un fichero por área (geometry, integrity, topology, shading, materials, naming, transforms, roles) |
-| `blender_asset_validator/operations/` | Lógica que modifica mallas: cleanup, topology (Clean/Retopo), lod, decimate, heatmap |
+| `blender_asset_validator/checks/` | Un fichero por área (geometry, integrity, topology, shading, uvs, materials, naming, transforms) |
+| `blender_asset_validator/operations/` | Lógica que modifica mallas: cleanup, topology (Clean/Retopo), lod, decimate, heatmap, uvs (islas, métricas y herramientas UV) |
 | `blender_asset_validator/operators/` | Botones (`bpy.types.Operator`) que llaman a operations y engine |
 | `blender_asset_validator/core/` | `engine` (carga de config y validación), `roles`, `registry`, `result`, `state`, `steps`, `mesh_utils` |
 | `blender_asset_validator/config/` | `default.json` ← `engines/<motor>.json` ← `presets/<preset>.json` ← `asset_validator.json` junto al .blend |
@@ -50,7 +52,7 @@ Documento para retomar el trabajo desde cualquier chat o dispositivo. Al empezar
 | Fase | Rama | Estado |
 |---|---|---|
 | 0 Cimientos | `feature/phase-0-foundations` | hecha, revisada, testeada (234 tests) y commiteada. Falta: que el usuario pruebe el último zip en su escena y verificar en motor. Arreglos de las pruebas con el Makarov en `bugfix/hard-surface-normals-and-lods` (252 tests) |
-| 1 UVs y texel density | — | pendiente |
+| 1 UVs y texel density | `feature/phase-1-uvs` (desde `bugfix/hard-surface-normals-and-lods`, sin ticket) | hecha, revisada (`/ponytail-review`, `/code-review`), testeada (319 tests) y commiteada. Falta: probarla con interfaz en tu escena y revisar el panel (ver "Siguiente paso" en la fase 1) |
 | 2 Hard surface | — | pendiente |
 | 3 Entornos, colisiones, texturas | — | pendiente |
 | 4 Topología y LOD avanzados | — | pendiente |
@@ -90,6 +92,7 @@ Todo lo demás depende de esto: el motor fija las reglas y los roles dicen qué 
 - `Region.active_panel_category` es de solo lectura. Para capturar el panel en una prueba con interfaz, se registra el panel con `bl_category = "Item"` y `preferences.view.show_splash = False`.
 - `tests/run.ps1 check_x` no funcionaba: el primer argumento posicional iba a parar a `-Blender`. Se arregló con `[CmdletBinding(PositionalBinding = $false)]`.
 - **Probar siempre con la escena real del usuario**, no solo con mallas sintéticas: `C:\Users\hugom\Documents\Assets\BlenderSuitTest_01.blend`, en este equipo. Ábrela en segundo plano y nunca la guardes. Es un coche de unos 190k triángulos por malla, con **11.579 piezas sueltas**.
+  - Desde la fase 1 (2026-10-28, en otro equipo): `Addon_Test.blend` en la raíz del repo (sin commitear; preset Cinematic guardado; el usuario la va cambiando: el 2026-10-29 tenía 5 mallas del Audi R8, 410k caras, con LODs del capó). Lo usa `tests/check_scene.py`, que la abre sin guardarla y sale con SKIP si no está. Suele estar abierta en el Blender del usuario: nunca se guarda. En `test_assets/` hay más: Audi R8 (FBX), una roca escaneada (FBX) y un T-Rex (OBJ).
 - **Retopologize "colgado" en el coche** (2026-10-27): no era un bucle, eran 145 ejecuciones de QuadriFlow seguidas, más una copia del bmesh entero por cada pieza, sin ninguna señal. Más de un minuto con Blender congelado, multiplicado por cada coche seleccionado. Arreglo:
   - `retopologize_steps` es un generador.
   - El operador es modal: avanza una pieza por tick, muestra el progreso en la barra de estado y se cancela con Esc.
@@ -143,23 +146,47 @@ Todo lo demás depende de esto: el motor fija las reglas y los roles dicen qué 
   - Aviso en `check_transforms` cuando el export pierde el vínculo con el padre: con `individual_files`, cuando el padre no se exporta, o cuando un LOD Group de Unreal ocupa su sitio. No sale en LODs ni colisiones. El export no cambia.
   - `tests/bench.py` llevaba roto desde que se añadieron los roles: llamaba a `check_collisions` con objetos que no son colisión.
   - Queda: LOD3 sigue degradando normales y texturas (es lo esperable al 10 %), y `Makarov_base_LOD3` tiene una pieza plegada de verdad (volumen negativo), que sale como aviso "inward". Los .glb con texturas duplicadas siguen igual. Aceptado en la revisión: el LOD1 tampoco protege las aristas duras que no están sobre una costura UV (`check_shading` ya las avisa), y en una pieza cerrada plana (una tarjeta de doble cara soldada) el aviso "inward" sale al azar, porque su volumen es ~0 (`ponytail:` en `wrong_way_faces`).
-- **Siguiente paso**: la fase 1. Los puntos lentos que quedan (ver Línea base) solo valen la pena si un asset real lo pide.
+- **Siguiente paso** (hecho): la fase 1. Los puntos lentos que quedan (ver Línea base) solo valen la pena si un asset real lo pide.
 
 ## Fase 1: UVs y texel density
 
-- [ ] Check de texel density por isla contra el objetivo del perfil (px/m, ±20 %). Herramienta para medirla, fijarla y copiarla entre objetos (`uv.average_islands_scale` y escalado hasta el objetivo).
-- [ ] Check de estiramiento por isla (distorsión de área y ángulo).
-- [ ] Separación entre islas en píxeles a la resolución objetivo (por ejemplo ≥8 px a 2K).
-- [ ] Islas fuera de 0–1, salvo en materiales tiling o UDIM.
-- [ ] Canal de lightmap UV1 sin solapes y dentro de 0–1. Opcional según el motor, porque Unreal y Unity pueden generarlo al importar. Para generarlo: `uv.lightmap_pack` o xatlas (MIT, como wheel).
-- [ ] Heatmaps de texel density y de estiramiento.
-- [ ] **Auto seams para hard surface**:
-  1. Seams en las aristas sharp, en los bordes de material y en los bordes abiertos.
+Código: `operations/uvs.py` (islas, métricas, herramientas), `checks/uvs.py` (`check_uvs`, movido desde `geometry.py`; `check_uv_layout`; `check_lightmap_uv`), `operators/uvs.py`, sección `uv` de `config/default.json`. Tests: `tests/check_uvs.py`.
+
+- [x] Check de texel density por isla contra el objetivo del perfil (`uv.texel_density` px/m a `uv.texture_size`, ±`texel_tolerance`). La línea INFO de cada objeto da su densidad (mediana ponderada por área 3D): eso es "medirla". **Set Texel Density** la fija: escala cada isla en numpy alrededor de su centro y empaqueta sin reescalar (`pack_islands(scale=False)`); si no cabe en 0–1, lo dice. *Copy from Active* la copia entre objetos. No se usa `uv.average_islands_scale`: da lo mismo con un paso menos.
+- [x] Check de estiramiento por isla: área (cuánto se aparta la escala UV de cada cara de la de su isla, `max_area_stretch`) y ángulo (error medio de los ángulos de las esquinas, `max_angle_stretch` en grados).
+- [x] Separación entre islas en píxeles (`min_island_gap_px` a `texture_size`). Se mide en la rejilla de píxeles de la textura: los bordes de cada isla se dibujan en píxeles, se engordan medio margen, y las islas que comparten un píxel están demasiado cerca. Cuenta islas, no pares.
+- [x] Islas fuera de 0–1, salvo en materiales tiling (regex `uv.tiling_materials` sobre el nombre) o UDIM (imagen `TILED`: la isla solo tiene que caber en una baldosa).
+- [x] Canal de lightmap UV1 sin solapes y dentro de 0–1. Si falta, solo es error con `uv.require_lightmap`. El Fix lo rehace con `uv.lightmap_pack` y no toca UV0. xatlas no hizo falta.
+- [x] Heatmaps *Texel Density* (lejos del objetivo, por exceso o por defecto; sin objetivo, de la mediana del objeto) y *UV Stretch*.
+- [x] **Auto seams para hard surface** (**Auto Unwrap**):
+  1. Seams en las aristas marcadas sharp (si no hay ninguna, en las que doblan más de `topology.feature_angle`), en los bordes de material y en los bordes abiertos.
   2. Unwrap: MINIMUM_STRETCH si existe, si no CONFORMAL.
-  3. Si una isla estira demasiado, se corta por el camino de mayor curvatura y se repite.
-  4. Se prefieren aristas cóncavas u ocultas.
-- [ ] Pesos de importancia en el unwrap: `use_weights` con el grupo `uv_importance`, que existe desde 4.3 (comprobarlo antes de usarlo).
-- [ ] Enderezar islas de quads (Follow Active Quads).
+  3. Si una isla estira demasiado, se corta por el camino de aristas más dobladas (desde la más doblada, en las dos direcciones, hasta llegar a un seam o un borde) y se repite, hasta 4 rondas.
+  4. Las aristas cóncavas puntúan 1,5 veces más. Las "ocultas" no se tienen en cuenta.
+- [x] Pesos de importancia en el unwrap: `use_weights` con el grupo `uv_importance`, si el operador tiene ese parámetro (4.3+) y el objeto tiene el grupo.
+- [x] Enderezar islas de quads: opción *Straighten Quad Islands* de Auto Unwrap (Follow Active Quads en las islas hechas solo de quads).
+
+### Notas de la fase 1, útiles para retomar
+
+- **Las escenas de prueba del roadmap no están en este equipo** (`C:\Users\hugom\Documents\Assets\...`). Se probó con lo que hay en `test_assets/` (sin commitear): el Audi R8 (FBX, 144 mallas, 178k caras), la roca (FBX, escaneo de 35k caras), el T-Rex (OBJ, 250k caras) y `Addon_Test.blend` (abierto en segundo plano, nunca guardado).
+- **UV0 es `uv_layers[0]`**, no la capa activa: es la que muestrea el material en el motor. `check_uvs` usaba la activa; con una sola capa da lo mismo.
+- **Islas**: caras unidas por una arista con las mismas UVs en sus dos extremos, como las ve Pack Islands. Coinciden exactamente con `bpy_extras.mesh_utils.mesh_linked_uv_islands` (test). Union-find en numpy (`_components`).
+- **Ninguno de los checks de layout tiene Fix**: Set Texel Density y Auto Unwrap reescriben UV0, y Fix All los aplicaría a assets ya horneados (el Makarov).
+- **El check de huecos se rehízo dos veces con los assets reales**:
+  1. Por pares de aristas (rejilla y distancia entre segmentos) se colgaba con el Audi: una malla con todas sus UVs en un parche de 15×20 px (paleta de colores) daba 43 millones de pares.
+  2. En píxeles seguía atascado con la fibra de carbono, que tiene UVs de −154 a 217 (22 millones de píxeles de borde por malla). Ahora hay un presupuesto de 5 M de filas: si se pasa, solo se recortan las aristas más largas. Además, se saltan las islas que están fuera de 0–1, que ya tienen su propio aviso.
+- **Islas de color sólido** (la isla entera cabe en un texel; mapeo de paleta): no tienen textura que medir, así que quedan fuera de densidad, estiramiento y huecos. Se cuentan en la línea INFO y no cuentan para la mediana.
+- Resultados con los assets reales (densidad objetivo 512 px/m por defecto): casi todo sale con aviso de densidad, porque ninguno está hecho a 512. Es lo esperado: el perfil del proyecto fija su objetivo, y `texel_density: 0` lo desactiva. Tiempos de `check_uv_layout`: Audi 11 s (144 mallas), T-Rex 3,2 s, roca 0,6 s, `Addon_Test` 1,9 s.
+- **Minimum Stretch (SLIM) de Blender 5.2 colapsa islas** de mallas reales: con los seams por ángulo, el 72 % de los triángulos de la roca salía con área UV 0, y el T-Rex quedaba en una tira de 0,005 de ancho. Angle Based y Conformal no lo hacen. `_unwrap` detecta las islas con más del 5 % de su área colapsada, las rehace con Conformal y las deja en Conformal en las rondas siguientes; si no, SLIM las volvía a colapsar cada ronda, con minutos por ronda. Angle Based arregla lo mismo, pero tardaba minutos en las islas grandes y cerradas del esqueleto.
+- Auto Unwrap, medido: lexan de `Addon_Test.blend` 11,6 s (178k caras), T-Rex 34 s (250k caras; antes de los arreglos, 256 s), roca 11 s, neumático del Audi 3 s. En orgánico (roca, T-Rex) salen miles de islas por los seams por ángulo: es una herramienta de hard surface, y lo orgánico es la fase 5. Sobre mallas reales siguen saliendo solapes tras el empaquetado. No se investigó más a fondo: la sospecha son triángulos casi degenerados de Conformal (unos 860 en la roca).
+- **Set Texel Density centra cada isla en (0,5; 0,5) antes de escalarla**. Islas con UVs en torno a 500 (basura o tiling) perdían hasta un 10 % de área por la precisión float32, y Pack Islands (closest UDIM) empaqueta en la baldosa donde están las islas. Hay test.
+- El margen de empaquetado es `ADD`, que es exacto con `scale=False` (Set Texel Density). Con `scale=True` (Auto Unwrap), el margen encoge con el layout, así que en layouts densos queda por debajo del configurado: en el lexan, el 65 % de las islas quedaron demasiado cerca, y `check_uv_layout` lo avisa. `FRACTION` sería exacto, pero `pack_islands` se quedó más de 20 s girando con un cubo. Pendiente: probar a empaquetar dos veces (escalar primero y después empaquetar sin escalar con el margen).
+- **Siguiente paso**:
+  1. Probar la fase 1 con interfaz en tu escena: el paso "Shading & UVs", las dos herramientas, los heatmaps y la línea INFO de densidad.
+  2. Decidir si la densidad objetivo por defecto (512 px/m) se queda o pasa a 0. Hoy avisa en casi cualquier asset que no se haya hecho a 512.
+  3. Medir con `tests/bench.py` (no se ejecutó en esta fase) y añadir `check_uv_layout` y `check_lightmap_uv` a la Línea base. En `Addon_Test.blend` (410k caras), `check_uv_layout` es lo más lento de la validación: 15,5 s de 21 s.
+  4. La fase 2 (hard surface): Hard Surface Prep puede encadenar Auto Unwrap y Set Texel Density.
+- Pendiente menor: el panel no se ha revisado con interfaz (no hay test que lo dibuje; solo añade botones con idnames registrados).
 
 ## Fase 2: hard surface
 

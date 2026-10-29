@@ -15,6 +15,7 @@ _SEVERITY_ICON = {
 # Tools that belong to a guided step (index into STEPS), drawn under its buttons
 _STEP_TOOLS = {
     2: [("asset_validator.clean_topology", "MOD_REMESH"), ("asset_validator.retopologize", "MESH_GRID")],
+    3: [("asset_validator.auto_unwrap", "UV"), ("asset_validator.set_texel_density", "TEXTURE")],
     4: [("asset_validator.generate_lods", "DUPLICATE")],
     5: [("asset_validator.export", "EXPORT")],
 }
@@ -59,6 +60,9 @@ def _draw_all_at_once(layout):
     topo_row = layout.row(align=True)
     topo_row.operator("asset_validator.clean_topology", icon="MOD_REMESH")
     topo_row.operator("asset_validator.retopologize", icon="MESH_GRID")
+    uv_row = layout.row(align=True)
+    uv_row.operator("asset_validator.auto_unwrap", icon="UV")
+    uv_row.operator("asset_validator.set_texel_density", icon="TEXTURE")
     _draw_heatmap_row(layout)
 
     if results is None:
@@ -111,7 +115,7 @@ def _draw_guided(layout, scene, config):
         tool_row = box.row(align=True)
         for idname, icon in tools:
             tool_row.operator(idname, icon=icon)
-    if current == 2:
+    if current in (2, 3):  # topology and UV heatmaps
         _draw_heatmap_row(box)
 
     results = get_results()

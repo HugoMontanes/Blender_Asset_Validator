@@ -13,6 +13,18 @@
     "check_shading": true,
     "degenerate_face_area_epsilon": 1e-10
   },
+  "uv": {
+    "texture_size": 2048,
+    "texel_density": 512,
+    "texel_density_description": "Target px per metre at texture_size (512 indie/PC, 1024 AAA); 0 = no target",
+    "texel_tolerance": 0.2,
+    "max_area_stretch": 0.3,
+    "max_angle_stretch": 10.0,
+    "min_island_gap_px": 8,
+    "tiling_materials": "(?i)(tiling|tileable|trim)",
+    "tiling_materials_description": "Regex on material names whose UVs may leave 0-1 on purpose",
+    "require_lightmap": false
+  },
   "optimization": {
     "merge_by_distance": true,
     "merge_distance": 0.0001,

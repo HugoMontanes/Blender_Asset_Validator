@@ -77,11 +77,11 @@ def cube(bm): bmesh.ops.create_cube(bm, size=1.0)
 def unwrap_cube_uv(obj):
     bm = bmesh.new(); bm.from_mesh(obj.data)
     uvl = bm.loops.layers.uv.active
-    # give every face its own non-overlapping 0.1 cell
+    # give every face its own non-overlapping cell; 0.22 of 2048 px on a 1 m face is 450 px/m, inside the 512 ±20% default
     for i, f in enumerate(bm.faces):
         ox, oy = (i % 4) * 0.25, (i // 4) * 0.25
         for j, l in enumerate(f.loops):
-            l[uvl].uv = (ox + [0, .2, .2, 0][j % 4], oy + [0, 0, .2, .2][j % 4])
+            l[uvl].uv = (ox + [0, .22, .22, 0][j % 4], oy + [0, 0, .22, .22][j % 4])
     bm.to_mesh(obj.data); bm.free()
 
 

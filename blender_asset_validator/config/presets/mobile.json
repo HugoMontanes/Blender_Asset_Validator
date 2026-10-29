@@ -5,6 +5,11 @@
     "allow_ngons": false,
     "check_uvs": true
   },
+  "uv": {
+    "texture_size": 1024,
+    "texel_density": 256,
+    "min_island_gap_px": 4
+  },
   "naming": {
     "pattern": "^[A-Z][a-zA-Z0-9_]+$",
     "description": "PascalCase"

@@ -149,13 +149,13 @@ try:
           f"{msg}; {faces0} -> {len(shells.data.polygons)} faces, {used} verts in faces, {fins} fins, {wrong} wrong")
 
     # one NaN UV (broken import) must not put every triangle in one overlap-grid cell and hang Validate
-    from blender_asset_validator.checks import geometry
+    from blender_asset_validator.checks import uvs
     import time
     bm = bmesh.new(); bm.loops.layers.uv.new()
     bmesh.ops.create_grid(bm, x_segments=150, y_segments=150, size=1.0, calc_uvs=True)  # 45k tris: ~4 s without the guard
     nan_uv = mk("NanUV", bm)
     nan_uv.data.uv_layers.active.data[0].uv = (float("nan"), 0.0)
-    t = time.perf_counter(); geometry.check_uvs([nan_uv], CFG); elapsed = time.perf_counter() - t
+    t = time.perf_counter(); uvs.check_uvs([nan_uv], CFG); elapsed = time.perf_counter() - t
     check("UV overlap with a NaN UV stays fast", elapsed < 1.0, f"{elapsed:.2f}s")
 
     # flat_angle from config drives LOD planar dissolve too

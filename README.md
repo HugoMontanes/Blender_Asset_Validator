@@ -19,7 +19,9 @@ By default, each selected asset is exported to its own file, together with its L
 | **Transforms** | Unapplied location, rotation, or scale; a warning on parented parts whose link the export drops (each asset in its own file, the parent not exported, or an Unreal LOD group in its place) |
 | **Polycount** | Triangle count over the configured budget (default: 50 000) |
 | **Ngons** | Faces with more than 4 vertices |
-| **UVs** | Missing UV maps, overlapping UV islands |
+| **UVs** | Missing UV maps, overlapping UV0 islands |
+| **UV layout** | UV0 islands off the profile's texel density (px/m at `uv.texture_size`, ±`texel_tolerance`), islands that stretch (area or angles), islands closer than `min_island_gap_px` to another (colours bleed in the mipmaps; measured on the texture's pixel grid), islands outside 0–1 (tiling materials and UDIM tiles allowed). Also reports each object's median texel density |
+| **Lightmap UV** | UV1 (the lightmap channel in Unreal and Unity) with overlapping faces or outside 0–1; a missing UV1 only when `uv.require_lightmap` is set. **Fix** rebuilds UV1 with Lightmap Pack and leaves UV0 alone |
 | **Geometry cleanup** | Degenerate / zero-area faces that should be fixed before export |
 | **Topology** | Edge-flow rules: poles with 6+ edges, 3/5-edge poles on smoothly curved areas (hard corners are fine), sliver triangles, warped quads |
 | **Normals / manifold** | Faces facing against most of their part, closed parts facing inward (by signed volume), loose geometry, edges shared by 3+ faces |
@@ -76,7 +78,14 @@ The **Engine** dropdown loads `config/engines/<engine>.json` on top of the defau
 
 ### Heatmaps
 
-**Heatmap** colors the selected meshes by a metric (blue fine, red bad, gray not applicable): *Quad Warp* and *Triangle Quality*. It's a temporary color attribute (`AV_heat`) shown with Solid shading > Attribute; the ✕ button removes it, and Export strips it so it never reaches the engine.
+**Heatmap** colors the selected meshes by a metric (blue fine, red bad, gray not applicable): *Quad Warp*, *Triangle Quality*, *Texel Density* (too dense or too sparse against the target) and *UV Stretch*. It's a temporary color attribute (`AV_heat`) shown with Solid shading > Attribute; the ✕ button removes it, and Export strips it so it never reaches the engine.
+
+### UV tools
+
+Both rewrite UV0 of the selected meshes, so they belong before baking or texturing. That is also why the UV layout warnings have no **Fix**: Fix All would repack the UVs of an asset that is already textured and break its textures.
+
+- **Auto Unwrap** (hard surface): seams on edges marked sharp (or, if none are marked, edges bent more than `topology.feature_angle`), on material borders and open borders; unwrap with Minimum Stretch where Blender has it (4.3+, otherwise Conformal; islands Minimum Stretch collapses to zero area get Conformal) and the `uv_importance` vertex group as weights if the object has one; every island that still stretches past the limits is cut along its most bent path of edges (concave ones first, where the seam hides) and only those islands are unwrapped again; then packed to fill 0–1 with the profile's margin (dense layouts end up with less margin; the gap check says so). Made for hard surface: on organic or scanned meshes the angle seams give thousands of small islands. *Straighten Quad Islands* (redo panel) runs Follow Active Quads on islands made only of quads.
+- **Set Texel Density** scales every island to one density (the profile's, or the one typed in the redo panel) and packs them without rescaling; it says so when they don't fit in one texture. *Copy from Active* gives the other selected meshes the active object's density.
 
 ### Batch validation (CI)
 
@@ -133,6 +142,16 @@ Rules are driven by `config/default.json`, with the Engine's `config/engines/<en
     "relax_iterations": 5,
     "relax_factor": 0.5
   },
+  "uv": {
+    "texture_size": 2048,
+    "texel_density": 512,
+    "texel_tolerance": 0.2,
+    "max_area_stretch": 0.3,
+    "max_angle_stretch": 10.0,
+    "min_island_gap_px": 8,
+    "tiling_materials": "(?i)(tiling|tileable|trim)",
+    "require_lightmap": false
+  },
   "lod": {
     "clean_topology": false,
     "levels": [{"suffix": "_LOD1", "ratio": 0.5}, {"suffix": "_LOD2", "ratio": 0.25}, {"suffix": "_LOD3", "ratio": 0.1}]
@@ -158,14 +177,16 @@ Key export options:
 
 Topology angles are in degrees: `flat_angle` is the bend still treated as flat (dissolve), `feature_angle` the bend from which an edge counts as a hard edge (pinned, poles allowed), `quad_angle` the tolerance when joining triangles into quads. `min_triangle_quality` is 1 for an equilateral triangle.
 
+UV checks measure UV0 (the first UV map, the one the engine's materials sample) against a `texture_size` px texture: `texel_density` is the target in px per metre (0 = no target; 512 is common for indie/PC, 1024 for AAA), `max_area_stretch` the fraction a face's UV scale may differ from its island's, `max_angle_stretch` the mean corner angle error in degrees. Islands of a material whose name matches `tiling_materials` repeat on purpose: they may leave 0–1 and are left out of the gap check. On a material with a UDIM image, an island only has to stay inside one tile.
+
 `roles.collision` and `roles.socket` are regexes on object names; the collision one names the mesh it belongs to with a `(?P<owner>...)` group.
 
 Two presets are included:
 
-| Preset | Budget | Ngons |
-|---|---|---|
-| `mobile.json` | 5 000 triangles | not allowed |
-| `cinematic.json` | 500 000 triangles | allowed |
+| Preset | Budget | Ngons | Texel density |
+|---|---|---|---|
+| `mobile.json` | 5 000 triangles | not allowed | 256 px/m at 1024 px, 4 px gaps |
+| `cinematic.json` | 500 000 triangles | allowed | 1024 px/m at 4096 px, 16 px gaps |
 
 ---
 
@@ -222,20 +243,23 @@ blender_asset_validator/
 |-- checks/
 |   |-- naming.py            # Naming, collision owners
 |   |-- transforms.py
-|   |-- geometry.py          # Polycount, ngons, UV overlap, degenerate faces
+|   |-- geometry.py          # Polycount, ngons, degenerate faces
 |   |-- integrity.py         # Normals, manifold
 |   |-- topology.py          # Edge-flow rules (poles, slivers, warped quads)
 |   |-- shading.py           # Hard edges off seams, GPU vertex cost
+|   |-- uvs.py               # UV overlap, texel density, stretch, gaps, 0-1, lightmap UV
 |   `-- materials.py
 |-- operations/
 |   |-- cleanup.py           # Fixers
 |   |-- heatmap.py           # Per-face heatmaps
 |   |-- lod.py               # LOD baking
-|   `-- topology.py          # Clean Topology, Retopologize, shared feature detection
+|   |-- topology.py          # Clean Topology, Retopologize, shared feature detection
+|   `-- uvs.py               # UV islands and their metrics, Set Texel Density, lightmap UV, Auto Unwrap
 |-- operators/
 |   |-- validate.py, fix.py  # Validate, guided steps, Fix, Show, Accept
 |   |-- heatmap.py
 |   |-- lod.py, topology.py  # Generate LODs, Clean Topology, Retopologize
+|   |-- uvs.py               # Auto Unwrap, Set Texel Density
 |   `-- export.py            # Per-engine export
 |-- ui/
 |   `-- panel.py             # N-panel UI
@@ -257,7 +281,7 @@ pip install fake-bpy-module-4.3
 
 ### Tests
 
-`tests/check_*.py` build their own scenes and run headless in Blender (validation and export, LODs, topology, review regressions). From the repo root:
+`tests/check_*.py` build their own scenes and run headless in Blender (validation and export, LODs, topology, UVs, review regressions). `check_scene.py` also opens `Addon_Test.blend` at the repo root, a real scene that is not committed (skipped if it's missing, never saved). From the repo root:
 
 ```powershell
 .\tests\run.ps1                      # all checks
@@ -265,7 +289,7 @@ pip install fake-bpy-module-4.3
 .\tests\run.ps1 -Blender "C:\path\to\blender.exe"
 ```
 
-Blender is found via `-Blender`, `$env:BLENDER`, `blender` on PATH, or the Microsoft Store install. Results go to `tests/_out/`; the script exits 1 if any check fails or doesn't finish.
+Blender is found via `-Blender`, `$env:BLENDER`, `blender` on PATH, the Microsoft Store install, or `Program Files\Blender Foundation`. Results go to `tests/_out/`; the script exits 1 if any check fails or doesn't finish.
 
 `tests/bench.py` times every check on 16k, 260k and 1M-triangle meshes (not run by `run.ps1`; see its header). The plan and its status are in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 

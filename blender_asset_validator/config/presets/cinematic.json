@@ -4,5 +4,10 @@
     "max_triangles": 500000,
     "allow_ngons": true,
     "check_uvs": true
+  },
+  "uv": {
+    "texture_size": 4096,
+    "texel_density": 1024,
+    "min_island_gap_px": 16
   }
 }
