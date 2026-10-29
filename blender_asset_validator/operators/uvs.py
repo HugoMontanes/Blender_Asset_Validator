@@ -4,14 +4,22 @@ import bpy
 
 from . import ObjectModeOnly
 from ..core.engine import load_config
+from ..core.roles import role
 from ..core.state import clear_results
 from ..operations.uvs import auto_unwrap, median_density, set_texel_density, uv_stats
 from ..ui.redraw import redraw_view3d
 
+SKIPPED_NOTE = "LODs and collision meshes keep their UVs"
 
-def _meshes(objects):
-    """One object per mesh: linked duplicates share their UVs."""
-    return list({obj.data: obj for obj in objects if obj.type == "MESH"}.values())
+
+def asset_meshes(objects, config):
+    """The asset meshes: a LOD shares its asset's texture and a collision mesh has none to rewrite."""
+    return [obj for obj in objects if obj.type == "MESH" and role(obj, config) == "asset"]
+
+
+def _meshes(objects, config):
+    """One asset object per mesh: linked duplicates share their UVs."""
+    return list({obj.data: obj for obj in asset_meshes(objects, config)}.values())
 
 
 class ASSET_VALIDATOR_OT_set_texel_density(ObjectModeOnly, bpy.types.Operator):
@@ -32,7 +40,7 @@ class ASSET_VALIDATOR_OT_set_texel_density(ObjectModeOnly, bpy.types.Operator):
         config = load_config()
         cfg = config.get("uv", {})
         density = self.density or cfg.get("texel_density", 0)
-        targets = _meshes(context.selected_objects)
+        targets = _meshes(context.selected_objects, config)
         active = context.active_object
         if self.from_active:
             if active is None or active.type != "MESH" or not active.data.uv_layers:
@@ -41,7 +49,7 @@ class ASSET_VALIDATOR_OT_set_texel_density(ObjectModeOnly, bpy.types.Operator):
             density = median_density(uv_stats(active, active.data.uv_layers[0]), cfg.get("texture_size", 2048))
             targets = [obj for obj in targets if obj.data is not active.data]
         if not targets:
-            self.report({"ERROR"}, "Select at least one mesh object first")
+            self.report({"ERROR"}, f"Select at least one asset mesh first ({SKIPPED_NOTE})")
             return {"CANCELLED"}
         if not density or math.isnan(density):
             self.report({"ERROR"}, "No texel density to set: give one, or set uv.texel_density in the profile")
@@ -71,9 +79,9 @@ class ASSET_VALIDATOR_OT_auto_unwrap(ObjectModeOnly, bpy.types.Operator):
 
     def execute(self, context):
         config = load_config()
-        objects = _meshes(context.selected_objects)
+        objects = _meshes(context.selected_objects, config)
         if not objects:
-            self.report({"ERROR"}, "Select at least one mesh object first")
+            self.report({"ERROR"}, f"Select at least one asset mesh first ({SKIPPED_NOTE})")
             return {"CANCELLED"}
         lines = [f"'{obj.name}': {auto_unwrap(obj, config, self.straighten)}" for obj in objects]
         print("\n".join(lines))

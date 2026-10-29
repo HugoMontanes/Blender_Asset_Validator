@@ -7,6 +7,7 @@ import numpy as np
 from ..core.mesh_utils import bake_mesh, read_array, select_in_edit_mode
 from ..core.registry import register_check
 from ..core.result import CheckResult, Severity
+from ..operations.hard_surface import add_weighted_normal, has_weighted_normal
 
 _SAME = 1e-4  # normals/UVs closer than this share a GPU vertex
 
@@ -50,6 +51,21 @@ def check_shading(objects: List[bpy.types.Object], config: dict) -> List[CheckRe
         ))
 
     return results
+
+
+@register_check(roles=("asset",))  # LODs carry the normals baked in, with no modifiers
+def check_weighted_normal(objects: List[bpy.types.Object], config: dict) -> List[CheckResult]:
+    """Mid-poly profiles shade the bevels with a Weighted Normal modifier: without it the big faces curve."""
+    if not config.get("hard_surface", {}).get("require_weighted_normal", False):
+        return []
+    return [CheckResult(
+        severity=Severity.ERROR,
+        message=f"'{obj.name}' has no Weighted Normal modifier (the profile is mid-poly)",
+        object_name=obj.name,
+        fix_hint="Fix adds one (Keep Sharp, last in the stack); Hard Surface Prep adds it too",
+        check_name="weighted_normal",
+        fix=partial(add_weighted_normal, obj),
+    ) for obj in objects if not has_weighted_normal(obj)]
 
 
 def shading_stats(mesh: bpy.types.Mesh) -> dict:

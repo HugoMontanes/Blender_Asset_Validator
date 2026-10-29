@@ -23,3 +23,5 @@ exports/
 *.blend2
 .DS_Store
 Thumbs.db
+
+/graphify-out

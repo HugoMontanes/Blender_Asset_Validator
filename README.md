@@ -26,6 +26,7 @@ By default, each selected asset is exported to its own file, together with its L
 | **Topology** | Edge-flow rules: poles with 6+ edges, 3/5-edge poles on smoothly curved areas (hard corners are fine), sliver triangles, warped quads |
 | **Normals / manifold** | Faces facing against most of their part, closed parts facing inward (by signed volume), loose geometry, edges shared by 3+ faces |
 | **Shading** | Hard edges off UV seams, GPU vertex cost |
+| **Mid-poly** | Assets without a Weighted Normal modifier, only when `hard_surface.require_weighted_normal` is set. **Fix** adds one |
 | **Collisions** | Collision meshes named after a mesh that doesn't exist (they'd be left out) |
 | **Materials** | Empty material slots, Image Texture nodes with no image or missing file |
 
@@ -80,10 +81,11 @@ The **Engine** dropdown loads `config/engines/<engine>.json` on top of the defau
 
 **Heatmap** colors the selected meshes by a metric (blue fine, red bad, gray not applicable): *Quad Warp*, *Triangle Quality*, *Texel Density* (too dense or too sparse against the target) and *UV Stretch*. It's a temporary color attribute (`AV_heat`) shown with Solid shading > Attribute; the ✕ button removes it, and Export strips it so it never reaches the engine.
 
-### UV tools
+### Hard surface and UV tools
 
-Both rewrite UV0 of the selected meshes, so they belong before baking or texturing. That is also why the UV layout warnings have no **Fix**: Fix All would repack the UVs of an asset that is already textured and break its textures.
+All three rewrite UV0 of the selected meshes, so they belong before baking or texturing. That is also why the UV layout warnings have no **Fix**: Fix All would repack the UVs of an asset that is already textured and break its textures. Selected LODs and collision meshes are skipped: a LOD shares its asset's texture.
 
+- **Hard Surface Prep** runs the whole low-poly setup in one click: smooth shading with every edge bent more than *Sharp Angle* (`topology.feature_angle`) marked sharp, keeping the ones already marked; Auto Unwrap, which puts the seams on those sharp edges; the profile's texel density, when it has one; and a Weighted Normal modifier (Keep Sharp, pinned last in the stack) so big flat faces shade flat. *Bevel Sharp Edges* (redo panel) is the mid-poly option: the sharp edges become bevel weight 1 and a Bevel modifier with *Segments* rounds them. They stop being sharp, because the Bevel would copy the sharp flag onto the borders of the chamfer and shade it faceted. For the same reason Prep removes a *Smooth by Angle* modifier (Shade Auto Smooth): the marked sharp edges do its job. Both modifiers stay live to tweak; an object that already has a Weighted Normal, or a Bevel limited by weight, doesn't get a second one, and a Weighted Normal added by hand is pinned last too. The chamfer faces take their UVs from the faces beside them, squeezed (30–37% less area on a cube): fine for tiling and trim textures, the usual mid-poly case.
 - **Auto Unwrap** (hard surface): seams on edges marked sharp (or, if none are marked, edges bent more than `topology.feature_angle`), on material borders and open borders; unwrap with Minimum Stretch where Blender has it (4.3+, otherwise Conformal; islands Minimum Stretch collapses to zero area get Conformal) and the `uv_importance` vertex group as weights if the object has one; every island that still stretches past the limits is cut along its most bent path of edges (concave ones first, where the seam hides) and only those islands are unwrapped again; then packed to fill 0–1 with the profile's margin (dense layouts end up with less margin; the gap check says so). Made for hard surface: on organic or scanned meshes the angle seams give thousands of small islands. *Straighten Quad Islands* (redo panel) runs Follow Active Quads on islands made only of quads.
 - **Set Texel Density** scales every island to one density (the profile's, or the one typed in the redo panel) and packs them without rescaling; it says so when they don't fit in one texture. *Copy from Active* gives the other selected meshes the active object's density.
 
@@ -179,6 +181,8 @@ Topology angles are in degrees: `flat_angle` is the bend still treated as flat (
 
 UV checks measure UV0 (the first UV map, the one the engine's materials sample) against a `texture_size` px texture: `texel_density` is the target in px per metre (0 = no target; 512 is common for indie/PC, 1024 for AAA), `max_area_stretch` the fraction a face's UV scale may differ from its island's, `max_angle_stretch` the mean corner angle error in degrees. Islands of a material whose name matches `tiling_materials` repeat on purpose: they may leave 0–1 and are left out of the gap check. On a material with a UDIM image, an island only has to stay inside one tile.
 
+`hard_surface.require_weighted_normal` makes a missing Weighted Normal modifier an error, for mid-poly projects (bevelled edges shaded by face-weighted normals instead of a baked normal map). Generated LODs are exempt: their normals are baked in.
+
 `roles.collision` and `roles.socket` are regexes on object names; the collision one names the mesh it belongs to with a `(?P<owner>...)` group.
 
 Two presets are included:
@@ -246,11 +250,12 @@ blender_asset_validator/
 |   |-- geometry.py          # Polycount, ngons, degenerate faces
 |   |-- integrity.py         # Normals, manifold
 |   |-- topology.py          # Edge-flow rules (poles, slivers, warped quads)
-|   |-- shading.py           # Hard edges off seams, GPU vertex cost
+|   |-- shading.py           # Hard edges off seams, GPU vertex cost, mid-poly Weighted Normal
 |   |-- uvs.py               # UV overlap, texel density, stretch, gaps, 0-1, lightmap UV
 |   `-- materials.py
 |-- operations/
 |   |-- cleanup.py           # Fixers
+|   |-- hard_surface.py      # Hard Surface Prep, Bevel and Weighted Normal modifiers
 |   |-- heatmap.py           # Per-face heatmaps
 |   |-- lod.py               # LOD baking
 |   |-- topology.py          # Clean Topology, Retopologize, shared feature detection
@@ -260,6 +265,7 @@ blender_asset_validator/
 |   |-- heatmap.py
 |   |-- lod.py, topology.py  # Generate LODs, Clean Topology, Retopologize
 |   |-- uvs.py               # Auto Unwrap, Set Texel Density
+|   |-- hard_surface.py      # Hard Surface Prep
 |   `-- export.py            # Per-engine export
 |-- ui/
 |   `-- panel.py             # N-panel UI
@@ -281,7 +287,7 @@ pip install fake-bpy-module-4.3
 
 ### Tests
 
-`tests/check_*.py` build their own scenes and run headless in Blender (validation and export, LODs, topology, UVs, review regressions). `check_scene.py` also opens `Addon_Test.blend` at the repo root, a real scene that is not committed (skipped if it's missing, never saved). From the repo root:
+`tests/check_*.py` build their own scenes and run headless in Blender (validation and export, LODs, topology, UVs, hard surface, review regressions). `check_scene.py` also opens a real scene that is not committed: `Addon_Test.blend` at the repo root, or the one in `$env:AV_SCENE` (skipped if it's missing, never saved). From the repo root:
 
 ```powershell
 .\tests\run.ps1                      # all checks

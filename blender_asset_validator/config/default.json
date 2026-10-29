@@ -25,6 +25,10 @@
     "tiling_materials_description": "Regex on material names whose UVs may leave 0-1 on purpose",
     "require_lightmap": false
   },
+  "hard_surface": {
+    "require_weighted_normal": false,
+    "require_weighted_normal_description": "Mid-poly: every asset needs a Weighted Normal modifier (Hard Surface Prep adds one)"
+  },
   "optimization": {
     "merge_by_distance": true,
     "merge_distance": 0.0001,

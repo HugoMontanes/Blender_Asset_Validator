@@ -4,7 +4,7 @@ Documento para retomar el trabajo desde cualquier chat o dispositivo. Al empezar
 
 ## Cómo retomar
 
-1. Mira en **Estado** la fase en curso y su rama: `git switch <rama>`. Nada está fusionado en `main` (que no tiene ni la fase 0): cada rama sale de la anterior, `feature/phase-0-foundations` → `bugfix/hard-surface-normals-and-lods` → `feature/phase-1-uvs`. La siguiente fase sale de la última.
+1. Mira en **Estado** la fase en curso y su rama: `git switch <rama>`. Nada está fusionado en `main` (que no tiene ni la fase 0): cada rama sale de la anterior, `feature/phase-0-foundations` → `bugfix/hard-surface-normals-and-lods` → `feature/phase-1-uvs` → `feature/phase-2-hard-surface`. La siguiente fase sale de la última.
 2. Tests: `.\tests\run.ps1` (PowerShell; encuentra Blender en PATH, en la Store o en `Program Files\Blender Foundation`). Ejecuta cada `tests/check_*.py` dentro de Blender, sin interfaz, y deja la salida en `tests/_out/`. `.\tests\run.ps1 check_lods` ejecuta solo uno. Todos tienen que pasar antes de un commit.
 3. Velocidad: `tests/bench.py` mide cada check con mallas de 16k, 260k y 1M de triángulos. `run.ps1` no lo ejecuta; el comando está en su cabecera. Se compara con la **Línea base**.
 4. Lee **Convenciones** antes de tocar código.
@@ -53,7 +53,7 @@ Documento para retomar el trabajo desde cualquier chat o dispositivo. Al empezar
 |---|---|---|
 | 0 Cimientos | `feature/phase-0-foundations` | hecha, revisada, testeada (234 tests) y commiteada. Falta: que el usuario pruebe el último zip en su escena y verificar en motor. Arreglos de las pruebas con el Makarov en `bugfix/hard-surface-normals-and-lods` (252 tests) |
 | 1 UVs y texel density | `feature/phase-1-uvs` (desde `bugfix/hard-surface-normals-and-lods`, sin ticket) | hecha, revisada (`/ponytail-review`, `/code-review`), testeada (319 tests) y commiteada. Falta: probarla con interfaz en tu escena y revisar el panel (ver "Siguiente paso" en la fase 1) |
-| 2 Hard surface | — | pendiente |
+| 2 Hard surface | `feature/phase-2-hard-surface` (desde `feature/phase-1-uvs`, sin ticket) | primera parte hecha (Hard Surface Prep, Bevel, check de mid-poly), revisada (`/ponytail-review`, `/code-review`), testeada (334 tests) y probada con interfaz y con escenas reales. Sin commitear. Falta: que el usuario la pruebe y decida qué hacer con Auto Unwrap/Prep en escaneos grandes. Quedan el bake helper, el crease para SubD y las trim sheets |
 | 3 Entornos, colisiones, texturas | — | pendiente |
 | 4 Topología y LOD avanzados | — | pendiente |
 | 5 Personajes y orgánico | — | pendiente |
@@ -183,22 +183,85 @@ Código: `operations/uvs.py` (islas, métricas, herramientas), `checks/uvs.py` (
 - El margen de empaquetado es `ADD`, que es exacto con `scale=False` (Set Texel Density). Con `scale=True` (Auto Unwrap), el margen encoge con el layout, así que en layouts densos queda por debajo del configurado: en el lexan, el 65 % de las islas quedaron demasiado cerca, y `check_uv_layout` lo avisa. `FRACTION` sería exacto, pero `pack_islands` se quedó más de 20 s girando con un cubo. Pendiente: probar a empaquetar dos veces (escalar primero y después empaquetar sin escalar con el margen).
 - **Siguiente paso**:
   1. Probar la fase 1 con interfaz en tu escena: el paso "Shading & UVs", las dos herramientas, los heatmaps y la línea INFO de densidad.
-  2. Decidir si la densidad objetivo por defecto (512 px/m) se queda o pasa a 0. Hoy avisa en casi cualquier asset que no se haya hecho a 512.
-  3. Medir con `tests/bench.py` (no se ejecutó en esta fase) y añadir `check_uv_layout` y `check_lightmap_uv` a la Línea base. En `Addon_Test.blend` (410k caras), `check_uv_layout` es lo más lento de la validación: 15,5 s de 21 s.
-  4. La fase 2 (hard surface): Hard Surface Prep puede encadenar Auto Unwrap y Set Texel Density.
-- Pendiente menor: el panel no se ha revisado con interfaz (no hay test que lo dibuje; solo añade botones con idnames registrados).
+  2. ~~Decidir si la densidad objetivo por defecto (512 px/m) se queda o pasa a 0.~~ Decidido el 2026-10-29: se queda en 512. Es el estándar indie/PC; el aviso se acepta, o el perfil del proyecto fija otro objetivo. Además, así Hard Surface Prep tiene una densidad que aplicar.
+  3. ~~Medir con `tests/bench.py`.~~ Hecho el 2026-10-29: ver **Línea base**. En `Addon_Test.blend` (410k caras), `check_uv_layout` es lo más lento de la validación: 15,5 s de 21 s.
+  4. ~~La fase 2 (hard surface).~~ Empezada: Hard Surface Prep encadena Auto Unwrap y Set Texel Density.
+- ~~Pendiente menor: el panel no se ha revisado con interfaz.~~ Revisado el 2026-10-29 con capturas (ver las notas de la fase 2).
 
 ## Fase 2: hard surface
 
-- [ ] **Hard Surface Prep** en un clic, encadenando operadores nativos:
+### Primera parte: criterios (2026-10-29, antes del código)
+
+Alcance: Hard Surface Prep, support loops con bevel y check de mid-poly. Quedan para después el bake helper, el crease para SubD (hace el `_high`, así que va con el bake helper) y las trim sheets. Cada criterio es un test en `tests/check_hard_surface.py`.
+
+**Hard Surface Prep** (`asset_validator.hard_surface_prep`). Trabaja sobre las mallas seleccionadas: lo de la malla, una vez por malla compartida; los modificadores, en cada objeto.
+
+- FR-1: sombreado smooth y sharp en las aristas que doblan más de *Sharp Angle* (por defecto, `topology.feature_angle`). Las sharp que ya estaban se conservan (`object.shade_smooth_by_angle` con `keep_sharp_edges`).
+- FR-2: Auto Unwrap. Seams en las sharp, en los bordes de material y en los bordes abiertos, cortes por estiramiento y pack.
+- FR-3: si `uv.texel_density` > 0, Set Texel Density con ese valor. Con 0 se queda el pack de Auto Unwrap.
+- FR-4: un modificador Weighted Normal (Face Area, Keep Sharp, fijado al final con `use_pin_to_last`), si el objeto no tiene ya uno activo.
+- FR-5: opción *Bevel Sharp Edges* (support loops para mid-poly). Las sharp pasan a bevel weight 1 y dejan de ser sharp. Se añade un Bevel limitado por weight, con *Segments* (2) y un ancho del 0,5 % de la dimensión mayor del objeto, delante del Weighted Normal. Medido antes en 5.2 con un cubo: si las aristas siguen sharp, el Bevel copia la marca a los bordes del bisel (24 aristas duras); sin Weighted Normal, las caras grandes se curvan 29°; con los dos, 0,6°.
+- FR-6: una línea por objeto con las sharp, las islas, la densidad y los modificadores añadidos.
+- FR-7: **check de mid-poly** (`check_weighted_normal`, solo assets: los LODs llevan las normales horneadas, sin modificadores). Con `hard_surface.require_weighted_normal: true`, un asset sin Weighted Normal activo en el viewport es un error, con un Fix que añade uno y no toca nada más. Con `false` (por defecto) no dice nada.
+- FR-8: el check va en el paso "Shading & UVs". Hard Surface Prep va en las herramientas de ese paso y en el modo normal.
+- NFR-1: Prep tarda lo que Auto Unwrap más Set Texel Density. En la malla más grande de la escena real del usuario, menos de 60 s.
+
+| AC | Requisito | Dado / cuando / entonces |
+|---|---|---|
+| 1 | FR-1, 2 | Un cilindro de 32 lados sin marcas, con `texel_density` 0: tras Prep tiene 64 sharp (los bordes de las tapas), 3 islas y ningún aviso de `check_uv_layout` ni de `check_uvs` |
+| 2 | FR-1 | Una arista del tubo marcada sharp a mano sigue sharp y es seam |
+| 3 | FR-3 | Con objetivo 512: cada isla a 512 ±1 % y todas dentro de 0–1 |
+| 4 | FR-4 | Hay un Weighted Normal con Keep Sharp, y repetir Prep no añade otro |
+| 5 | FR-4 | `check_shading` no avisa de aristas duras fuera de seams |
+| 6 | FR-5 | En un cubo con Bevel: la pila es Bevel → Weighted Normal, el mesh evaluado no tiene sharp, y las esquinas de las caras grandes se apartan menos de 2° de su normal |
+| 7 | FR-7 | Con el perfil que lo pide: error sin Weighted Normal; Fix lo añade y el error desaparece. Un LOD no da error. Sin el perfil, ningún resultado |
+| 8 | FR-8 | El check está en un paso (`check_steps`) y el operador se registra y se ejecuta desde `bpy.ops` |
+| 9 | NFR-1 | `check_scene.py`: Prep en la malla más grande de la escena real, en menos de 60 s |
+
+Casos límite: una malla sin caras se salta, sin error. Duplicados enlazados: la malla se prepara una vez, y cada objeto recibe sus modificadores. Un Weighted Normal desactivado no cuenta para el check. Si la densidad no cabe en 0–1, la línea lo dice (es el mensaje de Set Texel Density).
+
+Fuera de alcance: `harden_normals` en el Bevel (el Weighted Normal ya aplana las caras grandes, y como va detrás, lo sobrescribiría), un modo modal con progreso (Prep bloquea lo mismo que Auto Unwrap) y ajustar un Bevel que ya exista (si hay uno activo limitado por weight, no se añade otro; tras la revisión).
+
+### Notas de la primera parte, útiles para retomar
+
+Código: `operations/hard_surface.py`, `operators/hard_surface.py`, `check_weighted_normal` en `checks/shading.py` y la sección `hard_surface` de `config/default.json`. Tests: `tests/check_hard_surface.py`, 25 tests. Los cinco puntos delicados se comprobaron mutando el código: el test falla sin `keep_sharp_edges`, sin borrar las sharp al pasarlas a bevel weight, sin `use_pin_to_last`, sin `roles=("asset",)` y sin mirar `show_viewport`. El de `use_pin_to_last` no fallaba al principio, porque el operador añade el Bevel antes que el Weighted Normal. Hubo que añadir el caso real: un objeto que ya tiene Weighted Normal (por el Fix o por un Prep anterior) y al que después se le pone Bevel.
+
+- **API de 5.2, comprobada**: `object.shade_smooth_by_angle(angle, keep_sharp_edges)` conserva las sharp marcadas y las normales custom, y no añade modificadores. Necesita `temp_override` con el objeto como seleccionado y activo. No existen `Mesh.set_sharp_from_angle` ni `ObjectModifiers.move`; para el orden se usa `use_pin_to_last` en el Weighted Normal. En 4.2 no se ha podido probar (`use_pin_to_last` debería existir desde 4.2).
+- **Escenas reales en este equipo** (`$env:AV_SCENE`, ver Tests en el README):
+  - `C:\Users\hugom\Documents\Assets\makarov-pm\source\Makarov.blend`: Prep con Bevel en 1,4 s en el cargador (4,5k caras): 1.030 sharp, 374 islas, 512 px/m dentro de 0–1. Bevel + Weighted Normal se evalúan en 0,05 s (de 4,5k a 8k caras). Quedan solapes de UV tras el empaquetado y 19 islas estiradas: es lo que la fase 1 ya anotó de Auto Unwrap en mallas reales.
+  - `C:\Users\hugom\Documents\Assets\BlenderSuitTest_01.blend` ya no es solo el coche: el 2026-10-29 tenía 20 mallas y 2,6M de caras (copias de la carrocería del Audi, sus Retopo y LODs, el Gipsy Danger y `geo_dead_LOD2`, el escaneo del coche destrozado). La validación completa tarda 105 s, lineal con el tamaño. `check_scene.py` escala ahora el límite: 30 s por cada 400k caras.
+  - **Carrocería del Audi** (`aud_r8_08_lod0_body_black_glass_`, 190k caras, 11.579 piezas): Prep en 16,8 s, sin área colapsada. Cumple NFR-1. Que 512 px/m no quepan en una textura de 2048 es lo esperable en un coche entero.
+  - **El escaneo** (`geo_dead_LOD2`, 564k caras) es la malla más grande de la escena, así que es la que coge `check_scene.py`: Prep (y Auto Unwrap, que es lo mismo) tarda de 385 a 557 s, con Blender bloqueado y sin poder cancelar. Marca 286k sharp y deja 77k islas, con un 8-16 % del área colapsada. Medido por fases: el 88 % es `bpy.ops.uv.unwrap` nativo (4 llamadas de unos 2 min), luego `uv_stats` (56 s en 9 llamadas) y `face_islands` (47 s en 10). En nuestro código no hay nada que acelerar; solo se podría cancelar entre llamadas o sacar el unwrap a un proceso aparte, como QuadriFlow. Es un escaneo orgánico, fuera del alcance de hard surface (fase 5), pero es fácil lanzarlo sin querer seleccionando todo. **Sin decidir**: proteger o hacer modal Auto Unwrap/Prep, o solo documentarlo. Por eso NFR-1 falla en `check_scene.py` con esta escena.
+- **Interfaz** (capturas con Blender abierto y el panel en la pestaña Item): Prep va en su propia fila, en el modo normal y en el paso 4. En el N-panel no caben tres botones con texto en una fila, así que `_STEP_TOOLS` es ahora una lista de filas. Desde la interfaz (invoke, que toma el ángulo de `topology.feature_angle`) con Bevel, la pila queda Bevel → Weighted Normal. La descripción del paso 4 ya salía cortada antes de este cambio.
+- `check_scene.py`: Set Texel Density usa ahora la densidad mediana de la propia malla. Con 64 px/m fijos, todas las islas del Makarov quedaban por debajo de 4×4 px y no había nada que medir.
+- **`/code-review`** (2026-10-29): 15 hallazgos. Arreglados, cada uno con su test (los seis se comprobaron mutando el código):
+  - Un Weighted Normal añadido a mano sin fijar quedaba delante del Bevel. Ahora Prep fija al final todos los Weighted Normal.
+  - Las sharp pasaban a bevel weight aunque no se añadiera ningún Bevel que las biselara (había otro Bevel, por ángulo o desactivado). Ahora solo se omite el Bevel si ya hay uno activo limitado por weight.
+  - Prep, Auto Unwrap y Set Texel Density reescribían las UVs de los LODs y de las colisiones seleccionadas. Ahora solo tocan assets (`asset_meshes` en `operators/uvs.py`).
+  - Un modificador *Smooth by Angle* (de Shade Auto Smooth, fijado al final) volvía a marcar sharp los bordes del bisel: 48 aristas duras en un cubo, medido. Prep lo quita, porque las sharp marcadas hacen su trabajo.
+  - `invoke` pisaba el ángulo pasado con `INVOKE_DEFAULT`. **Sin interfaz, `INVOKE_DEFAULT` no llama a `invoke`**: ejecuta `execute`. Por eso el test headless no podía detectarlo, y se comprobó con Blender abierto (con el arreglo, 16 y 24 sharp; mutado, 24 y 24).
+  - Si ninguna arista llegaba al ángulo de Prep, Auto Unwrap ponía los seams con `topology.feature_angle`. Ahora usa el mismo ángulo que Prep.
+  - El test de "nada seleccionado" daba por bueno cualquier `RuntimeError`, también un crash; ahora mira el mensaje.
+  - Descartados, con la razón:
+    - "el FBX aplica los modificadores según render": `export_fbx_bin.py` de 5.2 usa `context.evaluated_depsgraph_get()`, el del viewport, y su `use_mesh_modifiers_render` está desactivado desde 2.8.
+    - Asserts que revientan antes de imprimir FAIL: el runner ya marca el fichero como "did not finish".
+    - Las UVs del bisel evaluado: medidas, sin solapes y dentro de 0–1. El chaflán sale comprimido un 30-37 % de área; queda documentado en el README.
+    - El doble empaquetado (Auto Unwrap y luego Set Texel Density): medido en la carrocería del Audi, `_pack` son 3,3 s en 2 llamadas de un Prep de 16,8 s. Ahorraría ~10 % a cambio de una opción más en `auto_unwrap`.
+    - `.vscode/settings.json` y el zip: las convenciones ya los dejan fuera del commit.
+    - El test lee las sharp con su propia función, a propósito, para no depender de la que prueba.
+  - Pendiente de decisión: el escaneo de 564k caras (ver arriba).
+
+### Plan completo
+
+- [x] **Hard Surface Prep** en un clic, encadenando operadores nativos:
   1. Smooth by Angle.
-  2. Marcar sharp por ángulo (`mesh.set_sharpness_by_angle`).
+  2. Marcar sharp por ángulo (con `object.shade_smooth_by_angle`, que hace 1 y 2 a la vez; `mesh.set_sharpness_by_angle` es de Edit Mode).
   3. Seams en las aristas sharp y en los bordes de material.
   4. Unwrap y pack (`uv.pack_islands` con `shape_method="CONCAVE"`).
   5. Texel density.
   6. Modificador Weighted Normal con Keep Sharp.
-- [ ] Support loops: bevel en las aristas sharp con N segmentos y `harden_normals` para mid-poly, o crease para SubD.
-- [ ] Check de mid-poly: si el perfil lo pide, tiene que haber Weighted Normal.
+- [ ] Support loops: [x] bevel en las aristas sharp con N segmentos para mid-poly (sin `harden_normals`: el Weighted Normal lo cubre); [ ] crease para SubD, que va con el bake helper.
+- [x] Check de mid-poly: si el perfil lo pide, tiene que haber Weighted Normal.
 - [ ] **Bake helper**:
   - Empareja `_high` y `_low` por nombre y crea el cage solo (copia inflada) o calcula la distancia de rayo a partir del tamaño.
   - Hornea con `object.bake` (`use_selected_to_active`, `cage_extrusion`, `normal_g`): `NEG_Y` en Unreal (DirectX), `POS_Y` en Unity y Godot (OpenGL).
@@ -285,7 +348,18 @@ Con el volumen con signo en `check_normals` (2026-10-28), medido el mismo día c
 | 261k | 3,9 s | 1,4 s | 0,66 s | 0,88 → 1,38 s | 0,11 s |
 | 1M | 16,8 s | 6,5 s | 3,2 s | 3,97 → 4,84 s | 0,52 s |
 
+Con los checks de UV de la fase 1 y `check_weighted_normal` de la fase 2 (2026-10-29, `tests/bench.py`):
+
+| Triángulos | Total | check_uvs | check_uv_layout | check_shading | check_normals | check_quad_planarity |
+|---|---|---|---|---|---|---|
+| 16k | 0,40 s | 0,04 s | 0,21 s | 0,08 s | 0,04 s | 0,01 s |
+| 261k | 4,2 s | 0,89 s | 1,29 s | 0,57 s | 1,06 s | 0,08 s |
+| 1M | 16,4 s | 3,93 s | 5,46 s | 2,20 s | 3,23 s | 0,37 s |
+
+`check_lightmap_uv` y `check_weighted_normal` salen a 0,00 s: la esfera no tiene UV1, y el perfil por defecto no pide Weighted Normal. `check_uv_layout` es ahora el check más lento: un tercio del total.
+
 Lo que más tarda ahora:
+- `check_uv_layout`: `uv_stats` y `face_islands`, que en el escaneo de 564k caras tardaban unos 5-6 s por llamada.
 - `check_normals`: `loose_parts` es un recorrido en Python. Se aceleraría con una union-find en numpy.
 - `check_shading`: el `np.unique` por filas. Se aceleraría con una vista `void`.
 - `check_uvs` en mallas enormes.

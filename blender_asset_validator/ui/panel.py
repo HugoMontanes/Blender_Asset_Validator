@@ -12,12 +12,13 @@ _SEVERITY_ICON = {
     Severity.INFO: "INFO",
 }
 
-# Tools that belong to a guided step (index into STEPS), drawn under its buttons
+# Tools that belong to a guided step (index into STEPS), drawn under its buttons, one list per row
 _STEP_TOOLS = {
-    2: [("asset_validator.clean_topology", "MOD_REMESH"), ("asset_validator.retopologize", "MESH_GRID")],
-    3: [("asset_validator.auto_unwrap", "UV"), ("asset_validator.set_texel_density", "TEXTURE")],
-    4: [("asset_validator.generate_lods", "DUPLICATE")],
-    5: [("asset_validator.export", "EXPORT")],
+    2: [[("asset_validator.clean_topology", "MOD_REMESH"), ("asset_validator.retopologize", "MESH_GRID")]],
+    3: [[("asset_validator.hard_surface_prep", "MOD_BEVEL")],
+        [("asset_validator.auto_unwrap", "UV"), ("asset_validator.set_texel_density", "TEXTURE")]],
+    4: [[("asset_validator.generate_lods", "DUPLICATE")]],
+    5: [[("asset_validator.export", "EXPORT")]],
 }
 
 
@@ -60,6 +61,7 @@ def _draw_all_at_once(layout):
     topo_row = layout.row(align=True)
     topo_row.operator("asset_validator.clean_topology", icon="MOD_REMESH")
     topo_row.operator("asset_validator.retopologize", icon="MESH_GRID")
+    layout.operator("asset_validator.hard_surface_prep", icon="MOD_BEVEL")
     uv_row = layout.row(align=True)
     uv_row.operator("asset_validator.auto_unwrap", icon="UV")
     uv_row.operator("asset_validator.set_texel_density", icon="TEXTURE")
@@ -110,8 +112,7 @@ def _draw_guided(layout, scene, config):
     row.scale_y = 1.3
     row.operator("asset_validator.validate", text="Check Step", icon="CHECKMARK")
     row.operator("asset_validator.fix_all", text="Fix Step", icon="MOD_DECIM")
-    tools = _STEP_TOOLS.get(current)
-    if tools:
+    for tools in _STEP_TOOLS.get(current, []):
         tool_row = box.row(align=True)
         for idname, icon in tools:
             tool_row.operator(idname, icon=icon)
