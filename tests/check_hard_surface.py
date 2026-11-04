@@ -152,6 +152,32 @@ check("Shade Auto Smooth's modifier is removed, so it can't re-sharpen the bevel
       [m.type for m in auto.modifiers] == ["BEVEL", "WEIGHTED_NORMAL"] and not sharp_of(evaluated).any(), str([m.name for m in auto.modifiers]))
 bpy.data.meshes.remove(evaluated)
 
+# Known issues from f82c897, measured on the Makarov (ROADMAP): custom normals and the Bevel's global clamp
+custom = from_bm("Custom", lambda bm: (bmesh.ops.create_cube(bm, size=2.0), bmesh.ops.triangulate(bm, faces=bm.faces)))
+custom.data.normals_split_custom_set_from_vertices([v.co.normalized() for v in custom.data.vertices])  # smooth, like a bake's
+hard_surface.prep_mesh(custom, config(), ANGLE, bevel=False)
+diagonals = [e.index for e in custom.data.edges if (custom.data.vertices[e.vertices[0]].co - custom.data.vertices[e.vertices[1]].co).length > 2.1]
+check("custom normals don't decide the sharp edges: the 12 bent cube edges, none of the 6 flat diagonals",
+      sharp_of(custom.data).sum() == 12 and not sharp_of(custom.data)[diagonals].any() and custom.data.has_custom_normals,
+      f"{sharp_of(custom.data).sum()} sharp, {sharp_of(custom.data)[diagonals].sum()} diagonals")
+two = from_bm("BigAndTiny", lambda bm: (bmesh.ops.create_cube(bm, size=2.0),
+                                        bmesh.ops.translate(bm, vec=(1.5, 0, 0), verts=bmesh.ops.create_cube(bm, size=0.01)["verts"])))
+hard_surface.prep_mesh(two, config(), ANGLE, bevel=True)
+hard_surface.add_modifiers(two, 2)
+bevel = next(m for m in two.modifiers if m.type == "BEVEL")
+two.data.materials.append(bpy.data.materials.new("ChamferMarker"))
+bevel.material = 1  # the chamfer faces, to measure them
+evaluated = bake_mesh(two)
+chamfer = read_array(evaluated.polygons, "area")[read_array(evaluated.polygons, "material_index", dtype=np.int64) == 1].sum()
+tiny = read_array(evaluated.vertices, "co", 3)
+tiny = np.abs(tiny[tiny[:, 0] > 1.2] - (1.5, 0, 0)).max()
+bpy.data.meshes.remove(evaluated)
+check("a tiny part doesn't shrink the big part's bevel (Blender's clamp is global): the chamfer is at least the asked width",
+      chamfer > 12 * 2 * bevel.width, f"chamfer area {chamfer:.4f}, asked width {bevel.width:.4f}")
+check("the tiny part's own chamfer is clamped to its size: no vertex leaves its 1 cm box", tiny <= 0.005 + 1e-6, f"{tiny * 1000:.2f} mm from its centre")
+# Measured on the Makarov, not reproduced here: with the bevel weights, Clamp Overlap still took the mag to 4 % (ROADMAP)
+check("the Bevel's global Clamp Overlap is off: the bevel weights clamp each edge", not bevel.use_clamp_overlap)
+
 octo = from_bm("Octo", lambda bm: bmesh.ops.create_cone(bm, cap_ends=True, segments=8, radius1=1.0, radius2=1.0, depth=2.0))  # tube bends 45°
 select(octo)  # headless, INVOKE_DEFAULT runs execute: invoke is checked with the UI open (ROADMAP, phase 2 notes)
 bpy.ops.asset_validator.hard_surface_prep(angle=math.radians(60))
@@ -204,6 +230,21 @@ try:
 except RuntimeError as e:  # bpy.ops raises for a reported ERROR, and for a crash: tell them apart
     r = {"CANCELLED"} if "Select at least one asset mesh" in str(e) else {"CRASHED: " + str(e)}
 check("Prep with nothing selected is cancelled", r == {"CANCELLED"}, str(r))
+
+# Esc in the modal closes the steps halfway: the mesh it was on comes back whole, still linked, no copy left over
+from blender_asset_validator.operators import restorable
+half = cylinder("Half"); half_twin = bpy.data.objects.new("HalfTwin", half.data); bpy.context.scene.collection.objects.link(half_twin)
+meshes = len(bpy.data.meshes)
+steps = restorable(half, hard_surface.prep_mesh_steps(half, config(), ANGLE, bevel=False))
+status = [next(steps) for _ in range(3)]  # the third comes after the sharp edges and the seams are marked
+midway = (sharp_of(half.data).sum(), sum(e.use_seam for e in half.data.edges), len(half.data.uv_layers))
+steps.close()
+check("Esc halfway through Prep: sharp edges, seams and UV layer undone, same mesh name, the twin still shares it",
+      midway[0] == 64 and midway[1] > 0 and midway[2] == 1 and not sharp_of(half.data).any() and not any(e.use_seam for e in half.data.edges)
+      and not half.data.uv_layers and half.data.name == "Half" and half_twin.data == half.data and len(bpy.data.meshes) == meshes,
+      f"{status[-1]!r}, midway {midway}, {len(bpy.data.meshes) - meshes} extra mesh(es)")
+note = uvs.finish(restorable(half, uvs.auto_unwrap_steps(half, config())))
+check("restorable run to the end keeps the result and drops its copy", half.data.uv_layers and len(bpy.data.meshes) == meshes, note)
 
 try:
     bav.unregister(); say("PASS  unregister clean")

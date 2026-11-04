@@ -2,11 +2,11 @@ import math
 
 import bpy
 
-from . import ObjectModeOnly
+from . import ObjectModeOnly, Steps, restorable
 from ..core.engine import load_config
 from ..core.roles import role
 from ..core.state import clear_results
-from ..operations.uvs import auto_unwrap, median_density, set_texel_density, uv_stats
+from ..operations.uvs import auto_unwrap_steps, median_density, set_texel_density, uv_stats
 from ..ui.redraw import redraw_view3d
 
 SKIPPED_NOTE = "LODs and collision meshes keep their UVs"
@@ -63,13 +63,14 @@ class ASSET_VALIDATOR_OT_set_texel_density(ObjectModeOnly, bpy.types.Operator):
         return {"FINISHED"}
 
 
-class ASSET_VALIDATOR_OT_auto_unwrap(ObjectModeOnly, bpy.types.Operator):
+class ASSET_VALIDATOR_OT_auto_unwrap(ObjectModeOnly, Steps, bpy.types.Operator):
     bl_idname = "asset_validator.auto_unwrap"
     bl_label = "Auto Unwrap"
     bl_description = (
         "Hard surface unwrap of UV0: seams on sharp edges (or by angle if none are marked), material borders "
         "and open borders, then islands that stretch too much are cut and unwrapped again, and packed. "
-        "Uses Minimum Stretch and the 'uv_importance' vertex group where Blender has them (4.3+). Replaces UV0"
+        "Uses Minimum Stretch and the 'uv_importance' vertex group where Blender has them (4.3+). Replaces UV0. "
+        "Esc stops it between steps (each can take minutes on a scan) and puts back the mesh it was on"
     )
     bl_options = {"REGISTER", "UNDO"}
 
@@ -77,15 +78,14 @@ class ASSET_VALIDATOR_OT_auto_unwrap(ObjectModeOnly, bpy.types.Operator):
         name="Straighten Quad Islands", description="Follow Active Quads on islands made only of quads",
     )
 
-    def execute(self, context):
+    def _begin(self, context) -> bool:
         config = load_config()
         objects = _meshes(context.selected_objects, config)
         if not objects:
             self.report({"ERROR"}, f"Select at least one asset mesh first ({SKIPPED_NOTE})")
-            return {"CANCELLED"}
-        lines = [f"'{obj.name}': {auto_unwrap(obj, config, self.straighten)}" for obj in objects]
-        print("\n".join(lines))
-        clear_results()
-        redraw_view3d(context)
-        self.report({"INFO"}, lines[0] if len(lines) == 1 else "; ".join(lines))
-        return {"FINISHED"}
+            return False
+        self._objects, self._config = objects, config
+        return True
+
+    def _work(self):
+        return self._each(self._objects, lambda obj: restorable(obj, auto_unwrap_steps(obj, self._config, self.straighten)))

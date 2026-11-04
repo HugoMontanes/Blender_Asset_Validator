@@ -361,11 +361,27 @@ def generate_lightmap_uv(obj: bpy.types.Object, config: dict) -> str:
     return f"Generated lightmap UV '{mesh.uv_layers[1].name}'"
 
 
+def finish(steps):
+    """Runs a generator of steps to the end; returns what it returns."""
+    try:
+        while True:
+            next(steps)
+    except StopIteration as end:
+        return end.value
+
+
 def auto_unwrap(obj: bpy.types.Object, config: dict, straighten: bool = False) -> str:
     """Hard surface unwrap: seams on sharp edges (or, with none marked, edges over
     topology.feature_angle), material borders and open borders; unwrap; then any
     island stretching past the uv limits is cut along its most bent path of edges
     (concave ones preferred: the seam hides in the crease) and unwrapped again."""
+    return finish(auto_unwrap_steps(obj, config, straighten))
+
+
+def auto_unwrap_steps(obj: bpy.types.Object, config: dict, straighten: bool = False):
+    """auto_unwrap() a step at a time: yields what runs next, between Blender's own unwrap and
+    pack calls (minutes each on a scan), so a modal operator can stop it; returns its note."""
+    yield "marking seams"
     mesh = obj.data
     if not mesh.uv_layers:
         mesh.uv_layers.new(name="UVMap")
@@ -383,7 +399,8 @@ def auto_unwrap(obj: bpy.types.Object, config: dict, straighten: bool = False) -
 
     cuts, faces = 0, np.arange(len(mesh.polygons))
     conformal = np.zeros(len(mesh.polygons), bool)
-    for _ in range(_CUT_ROUNDS):
+    for number in range(1, _CUT_ROUNDS + 1):
+        yield f"unwrapping {len(faces)} faces, round {number} of up to {_CUT_ROUNDS}"
         conformal = _unwrap(obj, faces, conformal)
         stats = uv_stats(obj, mesh.uv_layers[0])
         bad = np.flatnonzero((stats["island_area_stretch"] > cfg.get("max_area_stretch", 0.3))
@@ -396,7 +413,9 @@ def auto_unwrap(obj: bpy.types.Object, config: dict, straighten: bool = False) -
         cuts += added
         faces = np.flatnonzero(np.isin(stats["island"], bad))  # Minimum Stretch is the slow part: redo only what was cut
     if straighten:
+        yield "straightening quad islands"
         _straighten_quads(obj, uv_stats(obj, mesh.uv_layers[0])["island"])
+    yield "packing"
     _pack(obj, config, scale=True)
     islands = int(face_islands(mesh, mesh.uv_layers[0]).max()) + 1 if mesh.polygons else 0
     return f"{islands} island(s)" + (f", {cuts} seam edge(s) cut to relieve stretch" if cuts else "")

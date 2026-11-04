@@ -1,15 +1,10 @@
-import time
-
 import bpy
 
-from . import ObjectModeOnly
+from . import ObjectModeOnly, Steps
 from ..core.engine import load_config
 from ..core.state import clear_results
 from ..operations.topology import clean_topology, retopologize_steps
 from ..ui.redraw import redraw_view3d
-
-
-_NAVIGATION = {"MIDDLEMOUSE", "WHEELUPMOUSE", "WHEELDOWNMOUSE", "TRACKPADPAN", "TRACKPADZOOM", "NDOF_MOTION", "MOUSEMOVE"}
 
 
 def _selected_meshes(context):
@@ -46,7 +41,7 @@ class ASSET_VALIDATOR_OT_clean_topology(ObjectModeOnly, bpy.types.Operator):
         return {"FINISHED"}
 
 
-class ASSET_VALIDATOR_OT_retopologize(ObjectModeOnly, bpy.types.Operator):
+class ASSET_VALIDATOR_OT_retopologize(ObjectModeOnly, Steps, bpy.types.Operator):
     bl_idname = "asset_validator.retopologize"
     bl_label = "Retopologize"
     bl_description = (
@@ -62,57 +57,15 @@ class ASSET_VALIDATOR_OT_retopologize(ObjectModeOnly, bpy.types.Operator):
     )
     use_symmetry: bpy.props.BoolProperty(name="Symmetry", description="Mirror the result on X", default=False)
 
-    def invoke(self, context, event):
-        # A car is thousands of loose parts and a QuadriFlow run each, in a worker process:
-        # polling it on a timer keeps Blender responsive and shows where it is
-        if not self._begin(context):
-            return {"CANCELLED"}
-        self._jobs = self._work()
-        self._timer = context.window_manager.event_timer_add(0.02, window=context.window)
-        context.window_manager.modal_handler_add(self)
-        self._status = "Retopologize: preparing the mesh — Esc to cancel"
-        context.workspace.status_text_set(self._status)
-        return {"RUNNING_MODAL"}
-
-    def modal(self, context, event):
-        if event.type == "ESC":
-            self._jobs.close()  # frees the half-done object's data; finished objects stay
-            self._cancelled = True
-            return self._finish(context)
-        if event.type in _NAVIGATION and not (event.ctrl or event.alt or event.oskey):  # Alt+Wheel changes frame
-            return {"PASS_THROUGH"}
-        if event.type != "TIMER":
-            return {"RUNNING_MODAL"}  # the scene must not change under the running job
-        try:
-            status = next(self._jobs)
-            if status != self._status:
-                self._status = status
-                context.workspace.status_text_set(status)
-        except StopIteration:
-            return self._finish(context)
-        except Exception:
-            self._finish(context)  # or the timer keeps firing and the status bar stays stuck
-            raise
-        return {"RUNNING_MODAL"}
-
-    def cancel(self, context):  # Blender closing mid-run: the cleanup also kills the worker
-        self._jobs.close()
-        context.window_manager.event_timer_remove(self._timer)
-        context.workspace.status_text_set(None)
-
-    def execute(self, context):  # scripts and the redo panel: all in one go
-        if not self._begin(context):
-            return {"CANCELLED"}
-        for _ in self._work():
-            time.sleep(0.01)  # mostly waiting on the worker
-        return self._finish(context)
+    # Modal (Steps): a car is thousands of loose parts and a QuadriFlow run each, in a worker process.
+    # Esc closes _work, which frees the half-done object's data and kills the worker; finished objects stay
 
     def _begin(self, context) -> bool:
         self._objects = _selected_meshes(context)
         if not self._objects:
             self.report({"ERROR"}, "Select at least one mesh object first")
             return False
-        self._created, self._notes, self._failed, self._cancelled, self._timer = [], [], [], False, None
+        self._created, self._notes, self._failed = [], [], []
         return True
 
     def _work(self):
@@ -136,9 +89,6 @@ class ASSET_VALIDATOR_OT_retopologize(ObjectModeOnly, bpy.types.Operator):
                 steps.close()
 
     def _finish(self, context):
-        if self._timer is not None:
-            context.window_manager.event_timer_remove(self._timer)
-            context.workspace.status_text_set(None)
         print("\n".join(self._notes + self._failed))
 
         if self._created:
