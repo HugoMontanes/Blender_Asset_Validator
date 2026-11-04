@@ -377,8 +377,13 @@ Cada herramienta, con variaciones, sobre copias de cinco modelos de `C:\Users\hu
      - Coste: de 4 a 8 s en el escaneo de 564k caras, solo cuando hay caras al revés; sin ellas no cambia (1,07 s frente a 1,08 s en una esfera de 130k). Marcado con `ponytail:`.
      - Test en `check_regressions.py` con esa pieza, en las dos orientaciones; falla sin el arreglo.
   5. El LOD3 arruga las formas cilíndricas: un barril de 48 lados (unos 800 triángulos) en el showroom. No hay mínimo de triángulos por nivel. Encaja con "LOD quitando loops" de la fase 4.
-  6. Auto Unwrap con *Straighten Quad Islands* tarda 78,5 s frente a 2,9 s en el Gipsy (8.475 islas, un Follow Active Quads por isla).
-  7. Menores: Prep + Bevel pasa el presupuesto de triángulos sin avisar. ~~Fix All en el escaneo deja 3 caras al revés donde había 1~~ (arreglado con el 4; queda comprobar el Floor del Makarov, que puede ser lo mismo). Una copia o un renombrado de un LOD generado sigue siendo LOD (`asset_validator_lod`), y las herramientas se lo saltan sin decir por qué.
+  6. ~~Auto Unwrap con *Straighten Quad Islands* tarda 78,5 s frente a 2,9 s en el Gipsy.~~ **Arreglado:** cada isla deseleccionaba la malla entera y llamaba dos veces a `update_edit_mesh`, que es O(n) por isla. Ahora se selecciona una isla cada vez sin tocar el resto, y se saltan las de una sola cara (4.974 de las 5.609 del Gipsy), que son su propia referencia.
+     - Gipsy: 85 s → 4,4 s. Stiffener: 2,45 s → 0,85 s. UV idénticas a las de antes en los dos.
+     - Test de tiempo en `check_uvs.py` (1.600 islas junto a una pieza de 20k caras): 0,4 s con el arreglo, 5,6 s sin él.
+  7. Menores:
+     - ~~Prep + Bevel pasa el presupuesto de triángulos sin avisar.~~ **Arreglado:** la nota de Prep lo dice cuando es el Bevel el que lo cruza (de cuántos a cuántos), y no cuando la malla ya venía pasada, porque ahí menos segmentos no lo arreglan.
+     - ~~Copias de LODs.~~ **Arreglado, y era peor de lo que parecía:** regenerar los LODs borraba también las copias que hubiera hecho el usuario. Ahora el origen guarda un puntero a cada LOD que generó (`asset_validator_lod_object_<n>`); al copiar, Blender no lo reasigna a la copia. `roles.is_lod` lo comprueba, y lo usan el rol, `lods_of`, el export, el Fix de polycount y Clean Topology. Una copia pasa a ser un asset normal. Un LOD renombrado sigue siendo LOD, como ya esperaba el test del export. Los LODs de antes de este cambio, sin puntero, siguen contando como LODs.
+     - ~~Fix All en el escaneo deja 3 caras al revés donde había 1~~ (arreglado con el 4; queda comprobar el Floor del Makarov, que puede ser lo mismo).
 - **Showroom** (`demo/build_showroom.py`, ver README): genera `demo/Showroom.blend` por código, en unos 20 s. Tiene 17 estaciones de checks (incluida la nueva `mesh_data`) y 6 de herramientas, y se comprueba sola al final. Escribe junto al .blend un `asset_validator.json` que desactiva `check_location`. En el escaneo se ve que, en `-b`, `matrix_world` no sigue a `location` hasta un `view_layer.update()`; la cámara se apunta después de llamarlo.
 
 ### Siguiente paso (para retomar, 2026-11-03)
