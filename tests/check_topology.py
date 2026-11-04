@@ -195,6 +195,15 @@ try:
         msg = str(e)
     topo._WORKER = worker
     check("steps: a worker that keeps exiting is reported, not taken for QuadriFlow failing", "3 times in a row" in msg, msg)
+    # Small parts keep their faces, so a papercraft robot stayed at 98 % with 25 % asked: the note says so
+    bm = new_bm(); bmesh.ops.create_uvsphere(bm, u_segments=32, v_segments=16, radius=1.0)
+    _, alone_note = topo.retopologize(obj_from_bm("SphereAlone", bm), 0.25, False, 1e-4)
+    bm = new_bm(); bmesh.ops.create_uvsphere(bm, u_segments=32, v_segments=16, radius=1.0)
+    for k in range(60):
+        bmesh.ops.translate(bm, verts=bmesh.ops.create_cube(bm, size=0.2)["verts"], vec=(2 + k % 10 * 0.4, k // 10 * 0.4, 0))
+    _, crowd_note = topo.retopologize(obj_from_bm("SphereAndBits", bm), 0.25, False, 1e-4)
+    check("Retopologize says when small parts keep it far from the ratio asked, and only then",
+          "not the 25% asked" in crowd_note and "asked" not in alone_note, f"{crowd_note} | {alone_note}")
     bm = new_bm()
     for x in (0, 3, 6):  # three 6-face cubes: every part too small to remesh
         bmesh.ops.translate(bm, verts=bmesh.ops.create_cube(bm, size=1.0)["verts"], vec=(x, 0, 0))

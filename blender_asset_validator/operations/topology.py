@@ -115,7 +115,8 @@ def retopologize_steps(obj: bpy.types.Object, ratio: float, symmetry: bool, merg
         raise RuntimeError(f"'{obj.name}' has no faces to remesh")
     surface = Surface(mesh)
     smooth = any(p.use_smooth for p in mesh.polygons)
-    target_faces = max(8, round(sum(len(p.vertices) - 2 for p in mesh.polygons) * ratio / 2))  # quad = 2 tris
+    source_tris = sum(len(p.vertices) - 2 for p in mesh.polygons)
+    target_faces = max(8, round(source_tris * ratio / 2))  # quad = 2 tris
     work = mesh.copy()
     local_distance = merge_distance / max(max(abs(c) for c in obj.matrix_world.to_scale()), 1e-12)
     problems = _repair_for_quadriflow(work, local_distance)  # only the copy; UVs come from `surface`
@@ -211,6 +212,9 @@ def retopologize_steps(obj: bpy.types.Object, ratio: float, symmetry: bool, merg
         transfer_normals(new.data, obj)
 
     notes = [f"{len(new_mesh.polygons):,} faces from {len(remeshed)} part(s)"]
+    reached = sum(len(p.vertices) - 2 for p in new_mesh.polygons) / source_tris
+    if kept and reached > ratio * 1.5:  # a papercraft robot's 923 small parts kept it at 98 % with 25 % asked
+        notes.append(f"only down to {reached:.0%} of the triangles, not the {ratio:.0%} asked: the parts kept as they were keep theirs")
     small = len(parts) - len(remeshed) - failed - len(collapsed)
     if small:
         notes.append(f"{small} small part(s) kept as they were")
