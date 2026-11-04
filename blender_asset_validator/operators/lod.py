@@ -2,6 +2,7 @@ import bpy
 
 from . import ObjectModeOnly
 from ..core.engine import load_config
+from ..core.mesh_utils import repair_invalid
 from ..operations.lod import generate_lods
 from ..ui.redraw import redraw_view3d
 from .uvs import asset_meshes
@@ -20,6 +21,7 @@ class ASSET_VALIDATOR_OT_generate_lods(ObjectModeOnly, bpy.types.Operator):
         if not objects:
             self.report({"ERROR"}, "Select at least one asset mesh first")
             return {"CANCELLED"}
+        repair_invalid(objects, self)
 
         created = generate_lods(objects, config)
         print("\n".join(created))

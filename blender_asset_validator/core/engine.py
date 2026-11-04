@@ -77,6 +77,31 @@ def get_validation_objects(config: dict[str, Any]) -> list[bpy.types.Object]:
     return [obj for obj in objects if obj.type == "MESH"]
 
 
+def _invalid_mesh(mesh: bpy.types.Mesh) -> bool:
+    """Blender's own Mesh.validate finds something to repair, measured on a copy. A stale edit-mode
+    selection index made bmesh.from_mesh crash Blender in every check that reads the mesh."""
+    copy = mesh.copy()
+    try:
+        return copy.validate(clean_customdata=False)
+    finally:
+        bpy.data.meshes.remove(copy)
+
+
+def _invalid_mesh_result(obj: bpy.types.Object) -> CheckResult:
+    def repair():
+        obj.data.validate(clean_customdata=False)
+        return "Repaired the mesh data"
+    return CheckResult(
+        severity=Severity.ERROR,
+        message=f"'{obj.name}' has invalid mesh data (a stale selection, duplicate faces...): reading it can crash "
+                "Blender, so its other checks wait until it's repaired",
+        object_name=obj.name,
+        fix_hint="Fix runs Blender's own mesh validation, which repairs it",
+        check_name="mesh_data",
+        fix=repair,
+    )
+
+
 def run_validation(
     config: dict[str, Any],
     objects: list[bpy.types.Object] | None = None,
@@ -86,7 +111,10 @@ def run_validation(
     if objects is None:
         objects = get_validation_objects(config)
 
-    results: list[CheckResult] = []
+    invalid_meshes = {m for m in {o.data for o in objects if o.type == "MESH"} if _invalid_mesh(m)}  # once per mesh
+    results = [_invalid_mesh_result(obj) for obj in objects if obj.type == "MESH" and obj.data in invalid_meshes]
+    invalid = {r.object_name for r in results}
+    objects = [obj for obj in objects if obj.name not in invalid]
     roles = {obj: role(obj, config) for obj in objects}
 
     for check in get_checks():

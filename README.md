@@ -317,6 +317,16 @@ Blender is found via `-Blender`, `$env:BLENDER`, `blender` on PATH, the Microsof
 
 `tests/bench.py` times every check on 16k, 260k and 1M-triangle meshes (not run by `run.ps1`; see its header). The plan and its status are in [`docs/ROADMAP.md`](docs/ROADMAP.md).
 
+### Showroom (demo scene)
+
+`demo/build_showroom.py` builds `demo/Showroom.blend` from code alone, so it has no third-party assets and can be shown anywhere:
+
+```powershell
+blender -b --factory-startup --python-exit-code 1 --python demo/build_showroom.py
+```
+
+One collection per row: **01 Checks** has an object made to trip each check (n-gons, flipped faces, a fin on a shared edge, degenerate faces, unapplied transforms, a mesh over the triangle budget, no material, overlapping UVs, warped quads, hard edges off seams, poles, duplicate faces, a bad name, off texel density, an orphan `UCX_`, a `_high` with no low) and a clean reference; the next rows show each tool next to its result (Hard Surface Prep, Auto Unwrap, Clean Topology, Retopologize, LODs, a baked normal map, an Unreal export with LODs, `UCX_` and `SOCKET_`, heatmaps). It writes an `asset_validator.json` next to the .blend that turns off the pivot-at-origin rule, since a showroom spreads its assets out, and checks itself at the end: the build fails, listing the station, if an object doesn't raise the check its label promises (`Showroom_check.txt`). For the heatmap row, set the viewport to Solid > Attribute. To demo, select a row's objects and press **Validate**.
+
 ---
 
 ## License

@@ -195,6 +195,21 @@ try:
         msg = str(e)
     topo._WORKER = worker
     check("steps: a worker that keeps exiting is reported, not taken for QuadriFlow failing", "3 times in a row" in msg, msg)
+    bm = new_bm()
+    for x in (0, 3, 6):  # three 6-face cubes: every part too small to remesh
+        bmesh.ops.translate(bm, verts=bmesh.ops.create_cube(bm, size=1.0)["verts"], vec=(x, 0, 0))
+    cubes = obj_from_bm("ThreeCubes", bm)
+    try:
+        topo.retopologize(cubes, 0.5, False, 1e-4); msg = "no error"
+    except RuntimeError as e:
+        msg = str(e)
+    check("all parts too small: says so, not that QuadriFlow failed on a clean mesh", "fewer than" in msg, msg)
+    bm = new_bm(); bm.verts.new((0, 0, 0)); bm.verts.new((1, 0, 0))
+    try:
+        topo.retopologize(obj_from_bm("JustVerts", bm), 0.5, False, 1e-4); msg = "no error"
+    except RuntimeError as e:
+        msg = str(e)
+    check("no faces: says so", "no faces" in msg, msg)
 
     # 7. operators (non-manifold mesh: QuadriFlow must fail cleanly)
     bm = new_bm(); vs = [bm.verts.new(p) for p in [(0,0,0),(1,0,0),(0,1,0)]]; bm.faces.new(vs)  # QuadriFlow can't remesh one triangle

@@ -31,12 +31,23 @@ def bake_mesh(obj: bpy.types.Object) -> bpy.types.Mesh:
     )
 
 
+def repair_invalid(objects, operator=None) -> list:
+    """Blender's own Mesh.validate on each mesh, once per mesh; the names it had to repair, also reported
+    through `operator`. Tools run it first: a real asset's stale edit-mode selection made every
+    bmesh.from_mesh (and Edit Mode) crash Blender."""
+    names = [obj.name for obj in {o.data: o for o in objects if o.type == "MESH"}.values() if obj.data.validate(clean_customdata=False)]
+    if names and operator is not None:
+        operator.report({"WARNING"}, f"Repaired invalid mesh data first: {', '.join(names)}")
+    return names
+
+
 def select_in_edit_mode(obj: bpy.types.Object, mode: str, indices) -> None:
     """Open obj (made active) in Edit Mode with just these elements selected.
     mode: VERT, EDGE or FACE (what `indices` index). The object selection is
     kept, since it's the validation set; the other selected meshes enter Edit
     Mode too, with nothing selected in them."""
     context = bpy.context
+    repair_invalid([obj, *context.selected_objects])  # obj may not be selected yet
     obj.hide_set(False)
     obj.select_set(True)
     context.view_layer.objects.active = obj

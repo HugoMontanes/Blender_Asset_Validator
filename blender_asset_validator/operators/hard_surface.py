@@ -4,6 +4,7 @@ import bpy
 
 from . import ObjectModeOnly, Steps, restorable
 from ..core.engine import load_config
+from ..core.mesh_utils import repair_invalid
 from ..operations.hard_surface import add_modifiers, prep_mesh_steps
 from .uvs import SKIPPED_NOTE, asset_meshes
 
@@ -39,6 +40,7 @@ class ASSET_VALIDATOR_OT_hard_surface_prep(ObjectModeOnly, Steps, bpy.types.Oper
         if not self._objects:
             self.report({"ERROR"}, f"Select at least one asset mesh with faces first ({SKIPPED_NOTE})")
             return False
+        repair_invalid(self._objects, self)
         self._prepared = set()
         return True
 

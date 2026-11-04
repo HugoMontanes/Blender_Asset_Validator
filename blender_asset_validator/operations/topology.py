@@ -109,6 +109,9 @@ def retopologize_steps(obj: bpy.types.Object, ratio: float, symmetry: bool, merg
     in its own process: yields (parts done, parts to remesh), returns (new object,
     note). close() it to cancel at any moment; nothing is left behind."""
     mesh = bake_mesh(obj)
+    if not mesh.polygons:
+        bpy.data.meshes.remove(mesh)
+        raise RuntimeError(f"'{obj.name}' has no faces to remesh")
     surface = Surface(mesh)
     smooth = any(p.use_smooth for p in mesh.polygons)
     target_faces = max(8, round(sum(len(p.vertices) - 2 for p in mesh.polygons) * ratio / 2))  # quad = 2 tris
@@ -149,6 +152,9 @@ def retopologize_steps(obj: bpy.types.Object, ratio: float, symmetry: bool, merg
         yield len(big), len(big)  # all parts done: assembling and resampling still take seconds
         if not remeshed:
             raise RuntimeError(
+                f"All {len(parts)} loose parts have fewer than {_MIN_PART_FACES} faces: QuadriFlow would erase them, "
+                "so there's nothing to remesh"
+                if not big else
                 f"QuadriFlow collapsed the mesh ({collapsed[0]} quads) — raise the Triangle Ratio"
                 if collapsed else
                 f"QuadriFlow didn't finish in time on {remesher.timed_out} part(s) — try another Triangle Ratio"

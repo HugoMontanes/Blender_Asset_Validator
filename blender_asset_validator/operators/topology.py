@@ -2,6 +2,7 @@ import bpy
 
 from . import ObjectModeOnly, Steps
 from ..core.engine import load_config
+from ..core.mesh_utils import repair_invalid
 from ..core.state import clear_results
 from ..operations.topology import clean_topology, retopologize_steps
 from ..ui.redraw import redraw_view3d
@@ -26,6 +27,7 @@ class ASSET_VALIDATOR_OT_clean_topology(ObjectModeOnly, bpy.types.Operator):
         if not objects:
             self.report({"ERROR"}, "Select at least one mesh object first")
             return {"CANCELLED"}
+        repair_invalid(objects, self)
 
         cleaned, lines = set(), []
         for obj in objects:
@@ -65,6 +67,7 @@ class ASSET_VALIDATOR_OT_retopologize(ObjectModeOnly, Steps, bpy.types.Operator)
         if not self._objects:
             self.report({"ERROR"}, "Select at least one mesh object first")
             return False
+        repair_invalid(self._objects, self)
         self._created, self._notes, self._failed = [], [], []
         return True
 

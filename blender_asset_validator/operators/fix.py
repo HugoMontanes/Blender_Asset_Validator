@@ -79,18 +79,23 @@ class ASSET_VALIDATOR_OT_fix_all(ObjectModeOnly, bpy.types.Operator):
             return {"CANCELLED"}
 
         fixed = stale = 0
-        for result in results:
-            if result.fix is None:
-                continue
-            # Keep going on a stale result: returning CANCELLED after earlier fixes
-            # already changed data would leave those changes without an undo step.
-            try:
-                if result.fix() is not None:
-                    fixed += 1
-            except ReferenceError:
-                stale += 1
-
-        validate_and_store(load_config(), checks=step_checks(context.scene))
+        while results:
+            repaired = set()
+            for result in results:
+                if result.fix is None:
+                    continue
+                # Keep going on a stale result: returning CANCELLED after earlier fixes
+                # already changed data would leave those changes without an undo step.
+                try:
+                    if result.fix() is not None:
+                        fixed += 1
+                        if result.check_name == "mesh_data":
+                            repaired.add(result.object_name)
+                except ReferenceError:
+                    stale += 1
+            # A repaired mesh's own checks only run now: their fixes get a second pass, just for it
+            results = [r for r in validate_and_store(load_config(), checks=step_checks(context.scene))
+                       if r.object_name in repaired and r.check_name != "mesh_data"]
         redraw_view3d(context)
 
         if stale:

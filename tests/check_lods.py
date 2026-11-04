@@ -16,6 +16,7 @@ try:
     import blender_asset_validator as bav
     from blender_asset_validator.operations import lod as lod_ops, topology as topo
     from blender_asset_validator.core.mesh_utils import bake_mesh
+    from blender_asset_validator.core import engine
     bav.register()
     say("Blender " + bpy.app.version_string)
 
@@ -121,6 +122,16 @@ try:
     # operator path
     bpy.ops.object.select_all(action="DESELECT"); sphere.select_set(True); bpy.context.view_layer.objects.active = sphere
     check("operator FINISHED", bpy.ops.asset_validator.generate_lods() == {"FINISHED"})
+
+    # Faces stacked on the same vertices survived the collapse (1,182 in a papercraft robot's LODs)
+    bm = bmesh.new(); bmesh.ops.create_uvsphere(bm, u_segments=48, v_segments=24, radius=1.0)
+    verts, faces = [v.co[:] for v in bm.verts], [[v.index for v in f.verts] for f in bm.faces]; bm.free()
+    dup_mesh = bpy.data.meshes.new("Dups"); dup_mesh.from_pydata(verts, [], faces + [f[::-1] for f in faces[::50]])
+    dup_mesh.materials.append(bpy.data.materials.new("DupsM"))
+    dups = bpy.data.objects.new("Dups", dup_mesh); bpy.context.scene.collection.objects.link(dups)
+    lod_ops.generate_lods([dups], CFG)
+    invalid = [l.name for l in lod_ops.lods_of(dups) if engine._invalid_mesh(l.data)]
+    check("LODs come out as valid meshes (no duplicate faces), even from a source with some", len(lod_ops.lods_of(dups)) == 3 and not invalid, str(invalid))
     bav.unregister()
     say("DONE")
 except Exception:

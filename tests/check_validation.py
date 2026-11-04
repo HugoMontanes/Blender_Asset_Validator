@@ -287,6 +287,57 @@ for o in list(bpy.context.scene.objects): o.select_set(False)
 r = AV.validate()
 check("validate with nothing selected cancelled", r == {"CANCELLED"}, str(r))
 
+# A real asset's stale edit-mode selection made bmesh.from_mesh crash Blender (ROADMAP); the API can't
+# write one, so duplicate faces, which Blender's validate repairs too, stand in for it here
+dup_mesh = bpy.data.meshes.new("DupFaces")
+dup_mesh.from_pydata([(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0)], [], [(0, 1, 2, 3), (3, 2, 1, 0)])
+dup = bpy.data.objects.new("DupFaces", dup_mesh); bpy.context.scene.collection.objects.link(dup)
+dup_mesh.materials.append(bpy.data.materials.new("DupMat"))
+plain = make_mesh("PlainNeighbour", cube)
+found = engine.run_validation(engine.load_config(), [dup, plain])
+mine = [r for r in found if r.object_name == "DupFaces"]
+check("invalid mesh data: one error with a Fix, none of the other checks read it",
+      len(mine) == 1 and mine[0].check_name == "mesh_data" and mine[0].severity.value == "ERROR" and mine[0].fix is not None,
+      str([(r.check_name, r.message[:60]) for r in mine]))
+check("invalid mesh data: the other objects are still checked", any(r.object_name == "PlainNeighbour" for r in found))
+check("invalid mesh data: the check doesn't change the mesh", len(dup_mesh.polygons) == 2)
+mine[0].fix()
+check("invalid mesh data: Fix repairs it and its checks run again",
+      not any(r.check_name == "mesh_data" for r in engine.run_validation(engine.load_config(), [dup])) and len(dup_mesh.polygons) == 1)
+# Fix All: the repaired mesh's own checks (a face flipped inward here) only run after the repair
+bm = bmesh.new(); bmesh.ops.create_cube(bm, size=1.0)
+verts, faces = [v.co[:] for v in bm.verts], [[v.index for v in f.verts] for f in bm.faces]; bm.free()
+broken_mesh = bpy.data.meshes.new("DupFlipped")
+broken_mesh.from_pydata(verts, [], [faces[0][::-1]] + faces[1:] + [faces[2][::-1]])
+broken_mesh.materials.append(bpy.data.materials.new("DupFlippedMat"))
+broken = bpy.data.objects.new("DupFlipped", broken_mesh); bpy.context.scene.collection.objects.link(broken)
+select(broken); AV.validate(); AV.fix_all()
+left = [(r.check_name, r.message[:50]) for r in results() if r.object_name == "DupFlipped" and r.fix is not None]
+check("Fix All also applies the fixes a mesh_data repair uncovers", not left, str(left))
+# Every tool repairs first: bmesh drops duplicate faces on its own, so a spy, not the mesh, tells here
+from blender_asset_validator.core import mesh_utils
+from blender_asset_validator.operators import uvs as op_uvs, topology as op_topo, lod as op_lod, hard_surface as op_hs
+real_repair, repaired_by = mesh_utils.repair_invalid, set()
+spied = (op_uvs, op_topo, op_lod, op_hs, mesh_utils)
+for module in spied:
+    module.repair_invalid = lambda objects, operator=None: (
+        repaired_by.add(type(operator).bl_idname if operator else "select") if dup in objects else None,
+        real_repair(objects, operator))[1]
+select(plain)
+mesh_utils.select_in_edit_mode(dup, "FACE", [0])  # Show on a result whose object isn't selected
+bpy.ops.object.mode_set(mode="OBJECT")
+check("Show repairs invalid mesh data first, even on an object that isn't selected", "select" in repaired_by)
+repaired_by.clear()
+select(dup)
+tools = (("auto_unwrap", {}), ("set_texel_density", {"density": 512}), ("hard_surface_prep", {}),
+         ("clean_topology", {}), ("generate_lods", {}), ("retopologize", {}))  # last: it hides the original
+for name, kwargs in tools:
+    getattr(AV, name)(**kwargs)
+check("every mesh tool repairs invalid mesh data before reading the selection",
+      repaired_by == {f"asset_validator.{name}" for name, _ in tools}, str(sorted(repaired_by)))
+for module in spied:
+    module.repair_invalid = real_repair
+
 # ---------- 11. unregister clean ----------
 try:
     bav.unregister(); say("PASS  unregister clean")

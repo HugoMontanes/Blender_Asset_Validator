@@ -133,6 +133,7 @@ def _reduce(mesh: bpy.types.Mesh, target_tris: int, normals_source, surface, cle
 
         # Collapse leaves loose edges and odd flipped faces behind, and those would block the export
         delete_loose(tmp, {})
+        tmp.data.validate(clean_customdata=False)  # and faces stacked on the same vertices (1,182 on a papercraft robot)
         fix_normals(tmp, {})
         if normals_source is not None:
             transfer_normals(tmp.data, normals_source)

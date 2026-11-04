@@ -4,6 +4,7 @@ import bpy
 
 from . import ObjectModeOnly, Steps, restorable
 from ..core.engine import load_config
+from ..core.mesh_utils import repair_invalid
 from ..core.roles import role
 from ..core.state import clear_results
 from ..operations.uvs import auto_unwrap_steps, median_density, set_texel_density, uv_stats
@@ -54,6 +55,7 @@ class ASSET_VALIDATOR_OT_set_texel_density(ObjectModeOnly, bpy.types.Operator):
         if not density or math.isnan(density):
             self.report({"ERROR"}, "No texel density to set: give one, or set uv.texel_density in the profile")
             return {"CANCELLED"}
+        repair_invalid(targets, self)
 
         lines = [f"'{obj.name}': {set_texel_density(obj, density, config)}" for obj in targets]
         print("\n".join(lines))
@@ -84,6 +86,7 @@ class ASSET_VALIDATOR_OT_auto_unwrap(ObjectModeOnly, Steps, bpy.types.Operator):
         if not objects:
             self.report({"ERROR"}, f"Select at least one asset mesh first ({SKIPPED_NOTE})")
             return False
+        repair_invalid(objects, self)
         self._objects, self._config = objects, config
         return True
 
