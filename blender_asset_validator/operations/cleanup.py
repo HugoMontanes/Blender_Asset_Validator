@@ -84,6 +84,29 @@ def wrong_way_faces(bm: bmesh.types.BMesh) -> tuple:
     """(indices of faces pointing against most of their part, of faces on closed parts pointing inward,
     of edges where the surface can't be oriented). Inward goes by signed volume: recalc_face_normals only
     guesses the outside and turned a 10-face cone inside out. It's apart: usually on purpose (room, skydome)."""
+    wrong, inward, twisted = _orientation(bm)
+    unorientable = []
+    # A face still wrong once flipped has no right side (flaps off an edge with 3+ faces in a decimated papercraft
+    # robot): Fix would flip it forever. Retried until the faces Fix flips are exactly the ones tested
+    # ponytail: re-checks the whole mesh (4 -> 8 s on a 564k scan, only when faces are wrong); copy just the
+    # parts holding them if that matters
+    while wrong:
+        test = bm.copy()
+        test.faces.ensure_lookup_table()
+        bmesh.ops.reverse_faces(test, faces=[test.faces[i] for i in wrong])
+        still = set(_orientation(test)[0]) & set(wrong)
+        test.free()
+        if not still:
+            break
+        unorientable += still
+        wrong = [i for i in wrong if i not in still]
+    bm.faces.ensure_lookup_table()
+    twisted += sorted({e.index for i in unorientable for e in bm.faces[i].edges if len(e.link_faces) > 2} - set(twisted))
+    return wrong, inward, twisted
+
+
+def _orientation(bm: bmesh.types.BMesh) -> tuple:
+    """wrong_way_faces, without checking that flipping clears each wrong face."""
     bm.normal_update()
     before = [f.normal.copy() for f in bm.faces]
     work = bm.copy()  # same element order as bm

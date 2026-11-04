@@ -361,12 +361,24 @@ Cada herramienta, con variaciones, sobre copias de cinco modelos de `C:\Users\hu
     - El error `mesh_data` sale en todos los pasos guiados, aunque el paso no lo incluya. Es a propósito: si un paso se aprueba sobre un objeto que nadie ha comprobado, la aprobación no vale nada.
 - **Abiertos, sin decidir** (detalle e imágenes en el informe):
   1. Retopologize apenas reduce los modelos de muchas piezas: conserva las de menos de 200 caras, y el ratio se aplica al resto. Gipsy: 16.663 → 16.374 (ratio 0,5) y 16.307 (0,25). Audi: 0,5 da el 69 %. Escaneo: 0,1 da el 99,8 %.
-  2. Retopologize deja caras degeneradas (ERROR `geometry_cleanup`, bloquea el export) en el Gipsy al 25 % y en el stiffener, y arruga una pieza de detalle del stiffener.
+  2. ~~Retopologize deja caras degeneradas (ERROR `geometry_cleanup`, bloquea el export) en el Gipsy al 25 % y en el stiffener.~~ **Arreglado** (sin commitear):
+     - Una prueba por etapas encontró de dónde salen: 7 de la salida de QuadriFlow y 1 del remuestreo en el stiffener, y 2 caras en el umbral al ensamblar el Gipsy.
+     - Ahora `fix_degenerate_faces` pasa por el resultado antes de transferir las normales. Usa la distancia de fusión en unidades locales del objeto, las costuras se marcan después de la reparación y la nota del operador cuenta las caras quitadas. Stiffener al 50 % y al 25 % y Gipsy al 25 %: 0 caras degeneradas (se quitaron 8, 7 y 2).
+     - En la revisión quedó aceptado, sin arreglar, que el umbral de área sea el de por defecto: `retopologize` no recibe la configuración. Si se sube `degenerate_face_area_epsilon`, el check puede seguir marcando caras.
+     - El test aplasta una cara de la salida real de QuadriFlow y falla sin el arreglo.
+     - Sigue abierto: Retopologize arruga una pieza de detalle del stiffener. Es calidad de QuadriFlow, no un error del check.
   3. El bake del Audi sale a parches, con zonas invertidas en la normal map. Probablemente es la geometría interior del coche; falta un par high/low hecho para hornear.
-  4. Los LODs del Gipsy conservan 4 caras al revés (ERROR `normals`), sin duplicados, y con aristas de 3 o más caras que crea el colapso.
+  4. ~~Los LODs del Gipsy conservan 4 caras al revés (ERROR `normals`).~~ **Arreglado** (sin commitear). El fallo no estaba en los LODs, sino en `wrong_way_faces`, así que afectaba a cualquier asset:
+     - Las 4 o 5 caras son triángulos colgados de una arista de 3 caras, con sus otras dos aristas en el borde.
+     - `recalc_face_normals` los voltea tanto si están de un lado como del otro. Por eso salían como erróneos en ambas orientaciones, y Fix los volteaba en cada pasada sin dejarlos nunca bien.
+     - Con un cubo y una solapa no se reproduce; con una pieza real de 5 caras extraída del LOD, sí.
+     - Ahora la clasificación se repite sobre una copia con esas caras volteadas, hasta que las caras que voltea Fix sean exactamente las probadas. Las que siguen saliendo erróneas no tienen un lado bueno: su arista de 3 caras pasa al WARNING de aristas "que no se pueden orientar" del mismo `check_normals`, así que se siguen viendo aunque `check_manifold` esté desactivado.
+     - Es lo mismo que el 1→3 de Fix All en el escaneo, cuya única cara "al revés" era una de estas solapas.
+     - Coste: de 4 a 8 s en el escaneo de 564k caras, solo cuando hay caras al revés; sin ellas no cambia (1,07 s frente a 1,08 s en una esfera de 130k). Marcado con `ponytail:`.
+     - Test en `check_regressions.py` con esa pieza, en las dos orientaciones; falla sin el arreglo.
   5. El LOD3 arruga las formas cilíndricas: un barril de 48 lados (unos 800 triángulos) en el showroom. No hay mínimo de triángulos por nivel. Encaja con "LOD quitando loops" de la fase 4.
   6. Auto Unwrap con *Straighten Quad Islands* tarda 78,5 s frente a 2,9 s en el Gipsy (8.475 islas, un Follow Active Quads por isla).
-  7. Menores: Prep + Bevel pasa el presupuesto de triángulos sin avisar. Fix All en el escaneo deja 3 caras al revés donde había 1 (como el Floor del Makarov). Una copia o un renombrado de un LOD generado sigue siendo LOD (`asset_validator_lod`), y las herramientas se lo saltan sin decir por qué.
+  7. Menores: Prep + Bevel pasa el presupuesto de triángulos sin avisar. ~~Fix All en el escaneo deja 3 caras al revés donde había 1~~ (arreglado con el 4; queda comprobar el Floor del Makarov, que puede ser lo mismo). Una copia o un renombrado de un LOD generado sigue siendo LOD (`asset_validator_lod`), y las herramientas se lo saltan sin decir por qué.
 - **Showroom** (`demo/build_showroom.py`, ver README): genera `demo/Showroom.blend` por código, en unos 20 s. Tiene 17 estaciones de checks (incluida la nueva `mesh_data`) y 6 de herramientas, y se comprueba sola al final. Escribe junto al .blend un `asset_validator.json` que desactiva `check_location`. En el escaneo se ve que, en `-b`, `matrix_world` no sigue a `location` hasta un `view_layer.update()`; la cámara se apunta después de llamarlo.
 
 ### Siguiente paso (para retomar, 2026-11-03)

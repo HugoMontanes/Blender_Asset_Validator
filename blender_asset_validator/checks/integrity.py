@@ -48,7 +48,7 @@ def check_normals(objects: List[bpy.types.Object], config: dict) -> List[CheckRe
         if twisted:
             results.append(CheckResult(
                 severity=Severity.WARNING,
-                message=f"'{obj.name}' has {len(twisted)} edge(s) where the surface can't be oriented (twisted, Möbius-like)",
+                message=f"'{obj.name}' has {len(twisted)} edge(s) where the surface can't be oriented (twisted, Möbius-like, or a face hanging off an edge with 3+ faces)",
                 object_name=obj.name,
                 fix_hint="Recalculate can't fix these: delete and rebuild the faces around them",
                 check_name="normals",

@@ -239,6 +239,21 @@ try:
     cleanup.fix_normals(room, CFG)
     w, i, _ = cleanup.wrong_way_faces(_bm(room))
     check("fixed, the room still faces inward", not w and len(i) == len(room.data.polygons), f"wrong {len(w)}, inward {len(i)}")
+    # A papercraft robot's LOD part: recalc turns face 2, hanging off an edge with 3 faces, around in either winding
+    left = []
+    for winding in (0, 1):
+        flap = bpy.data.meshes.new("Flap")
+        flap.from_pydata([(-9.7614, 1.4986, 14.0895), (-9.5481, 1.3456, 14.0907), (-9.6474, 1.2622, 14.091),
+                          (-9.597, 1.306, 14.5544), (-9.7605, 1.5008, 14.5535)], [],
+                         [(0, 1, 2), (3, 0, 2), (3, 4, 0) if winding else (0, 4, 3), (3, 2, 1), (3, 1, 0)])
+        flap_obj = bpy.data.objects.new("Flap", flap)
+        cleanup.fix_normals(flap_obj, CFG)
+        w, _, unorientable = cleanup.wrong_way_faces(_bm(flap_obj))
+        left.append((w, len(unorientable)))
+        bpy.data.objects.remove(flap_obj); bpy.data.meshes.remove(flap)
+    check("a face recalc flips either way isn't wrong: Fix leaves nothing behind", [w for w, _ in left] == [[], []], str(left))
+    check("...and in the winding that used to come out wrong, its edge with 3 faces is one that can't be oriented",
+          left[1][1] == 1, str(left))
 
     # LODs come out export-clean: no loose geometry or odd flipped faces, carried over or made by the collapse
     bm = bmesh.new(); bm.loops.layers.uv.new(); bmesh.ops.create_uvsphere(bm, u_segments=32, v_segments=16, radius=1.0, calc_uvs=True)

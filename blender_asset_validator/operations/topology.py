@@ -191,11 +191,19 @@ def retopologize_steps(obj: bpy.types.Object, ratio: float, symmetry: bool, merg
     bm = bmesh.new()
     bm.from_mesh(new.data)
     surface.resample_faces(bm)
-    uv_layers = list(bm.loops.layers.uv.values())
-    for edge in bm.edges:
-        edge.seam = _is_uv_border(edge, uv_layers)  # ready for a later re-unwrap
     for face in bm.faces:
         face.smooth = smooth
+    bm.to_mesh(new.data)
+    bm.free()
+    from .cleanup import fix_degenerate_faces  # cleanup imports this module
+    # QuadriFlow and the resample leave a few zero-area faces (8 on a 7.7k-face stiffener): they'd block the export
+    degenerate = fix_degenerate_faces(new, {"optimization": {"merge_distance": local_distance,
+                                                             "degenerate_merge_distance": local_distance}})
+    bm = bmesh.new()
+    bm.from_mesh(new.data)
+    uv_layers = list(bm.loops.layers.uv.values())
+    for edge in bm.edges:
+        edge.seam = _is_uv_border(edge, uv_layers)  # ready for a later re-unwrap; after the repair, which merges edges
     bm.to_mesh(new.data)
     bm.free()
     if smooth:
@@ -215,6 +223,8 @@ def retopologize_steps(obj: bpy.types.Object, ratio: float, symmetry: bool, merg
         notes.append(f"{restored:,} original face(s) kept where QuadriFlow lost thin detail")
     if capped:
         notes.append(f"capped at {_MAX_QUADS:,} quads per part")
+    if degenerate:
+        notes.append(degenerate)
     return new, ", ".join(notes)
 
 

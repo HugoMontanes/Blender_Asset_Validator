@@ -210,6 +210,24 @@ try:
     except RuntimeError as e:
         msg = str(e)
     check("no faces: says so", "no faces" in msg, msg)
+    # QuadriFlow's output had zero-area faces (7 on a stiffener, an export ERROR); one is made here, in its output
+    real_patch, squashed = topo._patch_lost_surface, []
+    def squash(result, part):
+        poly = result.polygons[0]
+        for i in poly.vertices[1:]:
+            result.vertices[i].co = result.vertices[poly.vertices[0]].co.lerp(result.vertices[i].co, 1e-7)
+        squashed.append(result.polygons[0].area)
+        return real_patch(result, part)
+    topo._patch_lost_surface = squash
+    bm = new_bm(); bmesh.ops.create_uvsphere(bm, u_segments=32, v_segments=16, radius=1.0)
+    try:
+        new, note = topo.retopologize(obj_from_bm("ZeroAreaQuad", bm), 0.5, False, 1e-4)
+    finally:
+        topo._patch_lost_surface = real_patch
+    check("fixture: QuadriFlow's output got a zero-area face", squashed and squashed[0] <= 1e-10, str(squashed))
+    check("Retopologize leaves no zero-area faces, and says it removed them",
+          not any(p.area <= 1e-10 for p in new.data.polygons) and "degenerate" in note, note)
+    bpy.data.meshes.remove(new.data)
 
     # 7. operators (non-manifold mesh: QuadriFlow must fail cleanly)
     bm = new_bm(); vs = [bm.verts.new(p) for p in [(0,0,0),(1,0,0),(0,1,0)]]; bm.faces.new(vs)  # QuadriFlow can't remesh one triangle
