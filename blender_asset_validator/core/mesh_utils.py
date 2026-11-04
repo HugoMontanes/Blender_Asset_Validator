@@ -23,6 +23,12 @@ def evaluated_triangle_count(obj: bpy.types.Object) -> int:
         eval_obj.to_mesh_clear()
 
 
+def to_world(co: np.ndarray, matrix) -> np.ndarray:
+    """Local coordinates (n x 3) placed by `matrix`."""
+    m = np.array(matrix)
+    return co @ m[:3, :3].T + m[:3, 3]
+
+
 def bake_mesh(obj: bpy.types.Object) -> bpy.types.Mesh:
     """New mesh datablock of `obj` with modifiers applied, without bpy.ops (works headless and in any mode)."""
     depsgraph = bpy.context.evaluated_depsgraph_get()

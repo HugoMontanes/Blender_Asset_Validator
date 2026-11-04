@@ -132,6 +132,16 @@ try:
     lod_ops.generate_lods([dups], CFG)
     invalid = [l.name for l in lod_ops.lods_of(dups) if engine._invalid_mesh(l.data)]
     check("LODs come out as valid meshes (no duplicate faces), even from a source with some", len(lod_ops.lods_of(dups)) == 3 and not invalid, str(invalid))
+    # LOD3 crumpled a 48-sided barrel (1.3 % of its size) with no word: a LOD that strays past lod.max_deviation says so
+    shape = lod_ops._shape(dups.data, dups.matrix_world)
+    check("LOD deviation: a mesh against itself strays 0", lod_ops._stray(shape, shape) < 1e-6)
+    bm = bmesh.new(); bmesh.ops.create_cone(bm, cap_ends=True, segments=16, radius1=0.5, radius2=0.5, depth=1.4)
+    cyl = obj_from_bm("Cyl16", bm)
+    lod_ops.generate_lods([cyl, dups], CFG)
+    strayed = sorted(l.name for o in (cyl, dups) for l in lod_ops.lods_of(o) if lod_ops.STRAY in l)
+    check("LOD deviation: a 16-sided cylinder's LODs stray (1.4 % at half its 60 tris), a dense sphere's don't",
+          strayed == ["Cyl16_LOD1", "Cyl16_LOD2", "Cyl16_LOD3"], str(strayed))
+
     # A copy of a LOD keeps its properties: regenerating deleted it with the LODs, and the tools skipped it
     from blender_asset_validator.core.roles import role, lod_source
     renamed = lod_ops.lods_of(dups)[0]; renamed.name = "SM_Dups_LOD1"  # renamed, then copied: the copy isn't the LOD

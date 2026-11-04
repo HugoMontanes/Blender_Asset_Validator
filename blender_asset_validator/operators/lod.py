@@ -3,7 +3,7 @@ import bpy
 from . import ObjectModeOnly
 from ..core.engine import load_config
 from ..core.mesh_utils import repair_invalid
-from ..operations.lod import generate_lods
+from ..operations.lod import STRAY, generate_lods, lods_of
 from ..ui.redraw import redraw_view3d
 from .uvs import asset_meshes
 
@@ -26,7 +26,11 @@ class ASSET_VALIDATOR_OT_generate_lods(ObjectModeOnly, bpy.types.Operator):
         created = generate_lods(objects, config)
         print("\n".join(created))
 
-        if created:
+        strayed = [lod.name for obj in objects for lod in lods_of(obj) if STRAY in lod]
+        if strayed:
+            self.report({"WARNING"}, f"Generated {len(created)} LOD object(s); these stray from their source past "
+                        f"lod.max_deviation, give them a higher ratio: {', '.join(strayed)}")
+        elif created:
             self.report({"INFO"}, f"Generated {len(created)} LOD object(s)")
         else:
             self.report({"WARNING"}, "No LOD levels configured (config/default.json 'lod.levels')")

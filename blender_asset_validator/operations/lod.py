@@ -2,8 +2,11 @@ from typing import List
 
 import bmesh
 import bpy
+import numpy as np
+from mathutils import Vector
+from mathutils.bvhtree import BVHTree
 
-from ..core.mesh_utils import bake_mesh
+from ..core.mesh_utils import bake_mesh, read_array, to_world
 from ..core.roles import LOD_LEVEL as _LEVEL, LOD_MARKER as _MARKER, LOD_SLOT, LOD_SOURCE as _SOURCE, is_lod
 from ..core.steps import APPROVED
 from .cleanup import delete_loose, fix_normals
@@ -43,6 +46,7 @@ def generate_lods(objects: List[bpy.types.Object], config: dict) -> List[str]:
     collection = _get_or_create_collection(cfg.get("collection", "LODs"))
     settings = topology_settings(config)
     clean = settings if cfg.get("clean_topology", False) else None
+    max_deviation = cfg.get("max_deviation", 1.0)
 
     for obj in objects:
         if is_lod(obj):
@@ -58,6 +62,7 @@ def generate_lods(objects: List[bpy.types.Object], config: dict) -> List[str]:
         source_tris = _tri_count(base)
         smooth = any(p.use_smooth for p in base.polygons)
         surface = Surface(base) if clean else None
+        base_shape = _shape(base, obj.matrix_world)
 
         for level_idx, level in enumerate(levels, start=1):
             suffix = level.get("suffix", f"_LOD{level_idx}")
@@ -81,10 +86,12 @@ def generate_lods(objects: List[bpy.types.Object], config: dict) -> List[str]:
                 lod_obj.vertex_groups.remove(group)
             collection.objects.link(lod_obj)  # obj.copy() isn't in any collection yet
 
-            created.append(
-                f"Generated '{lod_obj.name}' from '{obj.name}' "
-                f"({source_tris:,} -> {_tri_count(mesh):,} tris, target {target:,})"
-            )
+            line = f"Generated '{lod_obj.name}' from '{obj.name}' ({source_tris:,} -> {_tri_count(mesh):,} tris, target {target:,})"
+            stray = _stray(base_shape, _shape(mesh, obj.matrix_world)) if base_shape else 0.0
+            if stray > max_deviation:
+                lod_obj[STRAY] = round(stray, 2)
+                line += f": strays {stray:.1f} % of its size from the source (limit {max_deviation:g} %), give it a higher ratio"
+            created.append(line)
         bpy.data.meshes.remove(base)
 
     return created
@@ -140,6 +147,35 @@ def _reduce(mesh: bpy.types.Mesh, target_tris: int, normals_source, surface, cle
         return tmp.data
     finally:
         bpy.data.objects.remove(tmp)
+
+
+_MAX_SAMPLES = 20_000  # vertices compared per mesh: ~0.1 s, and a 191k-tri car body read the same as all of them
+STRAY = "asset_validator_lod_stray"  # on a LOD past lod.max_deviation: how far it strays, in % of the source's size
+
+
+def _shape(mesh: bpy.types.Mesh, matrix):
+    """(sampled world vertices, BVH of the world triangles, bbox diagonal) of `mesh` placed by `matrix`, so an
+    object's scale counts as it's seen. None without faces: no surface to compare."""
+    if not mesh.polygons:
+        return None
+    mesh.calc_loop_triangles()
+    co = to_world(read_array(mesh.vertices, "co", 3, np.float64), matrix)
+    tris = read_array(mesh.loop_triangles, "vertices", 3, np.int32)
+    tree = BVHTree.FromPolygons(co.tolist(), tris.tolist())
+    return co[::-(-len(co) // _MAX_SAMPLES)], tree, float(np.linalg.norm(np.ptp(co, axis=0))) or 1.0
+
+
+def _stray(base, lod) -> float:
+    """How far a LOD strays from its source, in % of the source's size: the 99th percentile of the distances
+    both ways (source vertices to the LOD catch dents and lost features, LOD vertices to the source spikes),
+    so one stray vertex doesn't count. `base`, `lod`: _shape()s; a LOD with no faces left strays 100 %."""
+    if lod is None:
+        return 100.0
+
+    def far(points, tree):
+        return float(np.percentile([(Vector(p) - tree.find_nearest(p)[0]).length for p in points.tolist()], 99))
+
+    return max(far(base[0], lod[1]), far(lod[0], base[1])) / base[2] * 100
 
 
 def _write_protect_group(obj: bpy.types.Object) -> None:

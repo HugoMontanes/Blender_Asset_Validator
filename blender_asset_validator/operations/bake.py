@@ -7,7 +7,7 @@ import numpy as np
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
-from ..core.mesh_utils import read_array
+from ..core.mesh_utils import read_array, to_world
 from ..core.roles import bake_base
 
 _SAMPLES = 16  # anti-aliasing of the bake; the render's samples (4096 by default) would take minutes
@@ -45,7 +45,7 @@ def _world_bvh(evaluated: bpy.types.Object):
     mesh = evaluated.to_mesh()
     try:
         mesh.calc_loop_triangles()
-        verts = _to_world(read_array(mesh.vertices, "co", 3), evaluated.matrix_world)
+        verts = to_world(read_array(mesh.vertices, "co", 3), evaluated.matrix_world)
         tris = read_array(mesh.loop_triangles, "vertices", 3, np.int32)
         return BVHTree.FromPolygons(verts.tolist(), tris.tolist()), float(np.linalg.norm(np.ptp(verts, axis=0)))
     finally:
@@ -55,14 +55,9 @@ def _world_bvh(evaluated: bpy.types.Object):
 def _world_vertices(evaluated: bpy.types.Object) -> np.ndarray:
     mesh = evaluated.to_mesh()
     try:
-        return _to_world(read_array(mesh.vertices, "co", 3), evaluated.matrix_world)
+        return to_world(read_array(mesh.vertices, "co", 3), evaluated.matrix_world)
     finally:
         evaluated.to_mesh_clear()
-
-
-def _to_world(co: np.ndarray, matrix) -> np.ndarray:
-    m = np.array(matrix)
-    return co @ m[:3, :3].T + m[:3, 3]
 
 
 def add_triangulate(obj: bpy.types.Object):
