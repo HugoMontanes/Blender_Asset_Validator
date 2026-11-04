@@ -116,6 +116,15 @@ check("AC-4: Weighted Normal with Keep Sharp added once", len(wn) == 1 and wn[0]
 hard_surface.add_modifiers(box, 2)
 check("AC-6: a Bevel added after the Weighted Normal still goes above it", [m.type for m in box.modifiers] == ["BEVEL", "WEIGHTED_NORMAL"],
       str([m.type for m in box.modifiers]))
+weighted = [cube(f"BudgetCube{i}") for i in range(2)]
+for c in weighted:
+    hard_surface.prep_mesh(c, config(), ANGLE, bevel=True)  # bevel weights on its 12 edges
+under = hard_surface.add_modifiers(weighted[0], 2, budget=100000)
+crossed = hard_surface.add_modifiers(weighted[1], 2, budget=13)  # 12 triangles before the Bevel
+already = hard_surface.add_modifiers(cube("AlreadyOver"), 2, budget=11)
+check("a Bevel that takes the mesh over the triangle budget says so, not one on a mesh already over",
+      not any("budget" in n for n in under + already) and any("from 12 to" in n and "13 budget" in n for n in crossed),
+      f"{under} {crossed} {already}")
 
 # AC-6: Bevel on the sharp edges, through the operator
 bev = cube("Bevelled")

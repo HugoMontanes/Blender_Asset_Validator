@@ -52,5 +52,5 @@ class ASSET_VALIDATOR_OT_hard_surface_prep(ObjectModeOnly, Steps, bpy.types.Oper
         if obj.data not in self._prepared:  # linked duplicates share the mesh, not the modifiers
             self._prepared.add(obj.data)
             notes.append((yield from restorable(obj, prep_mesh_steps(obj, self._config, self.angle, self.bevel))))
-        notes += add_modifiers(obj, self.segments if self.bevel else 0)
+        notes += add_modifiers(obj, self.segments if self.bevel else 0, self._config.get("geometry", {}).get("max_triangles", 50000))
         return ", ".join(notes) or "shared mesh already prepared"

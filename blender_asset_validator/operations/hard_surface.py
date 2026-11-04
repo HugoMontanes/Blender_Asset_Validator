@@ -4,7 +4,7 @@ import math
 import bpy
 import numpy as np
 
-from ..core.mesh_utils import read_array
+from ..core.mesh_utils import evaluated_triangle_count, read_array
 from .uvs import auto_unwrap_steps, finish, set_texel_density
 
 _BEVEL_WIDTH = 0.005  # of the mesh's largest local dimension; the modifier stays live to tune it
@@ -79,8 +79,9 @@ def _sharp_to_bevel_weight(mesh: bpy.types.Mesh, sharp: np.ndarray) -> None:
     mesh.attributes.remove(mesh.attributes["sharp_edge"])  # looked up again: adding an attribute can move the others
 
 
-def add_modifiers(obj: bpy.types.Object, bevel_segments: int) -> list:
-    """Bevel by weight (when bevel_segments > 0) and Weighted Normal, last, unless the object has them."""
+def add_modifiers(obj: bpy.types.Object, bevel_segments: int, budget: int = 0) -> list:
+    """Bevel by weight (when bevel_segments > 0) and Weighted Normal, last, unless the object has them.
+    With a triangle `budget`, says when the Bevel takes the mesh over it."""
     added = []
     # Shade Auto Smooth's modifier, pinned last: the marked sharp edges replace it, and after a Bevel it re-sharpens the chamfer
     auto_smooth = [m for m in obj.modifiers if m.type == "NODES" and m.node_group and m.node_group.name.startswith("Smooth by Angle")]
@@ -89,12 +90,16 @@ def add_modifiers(obj: bpy.types.Object, bevel_segments: int) -> list:
     if auto_smooth:
         added.append("Smooth by Angle modifier removed (the edges are marked sharp)")
     if bevel_segments and not any(m.type == "BEVEL" and m.limit_method == "WEIGHT" and m.show_viewport for m in obj.modifiers):
+        before = evaluated_triangle_count(obj) if budget else 0
         modifier = obj.modifiers.new("Bevel", "BEVEL")
         modifier.limit_method = "WEIGHT"
         modifier.segments = bevel_segments
         modifier.width = _bevel_width(obj.data)  # the width the bevel weights were clamped for
         modifier.use_clamp_overlap = False  # global: one short edge shrank every Makarov chamfer to 0-55 %
         added.append(f"Bevel ({bevel_segments} segments) added")
+        after = evaluated_triangle_count(obj) if budget and before <= budget else 0
+        if after > budget:  # only when the Bevel is what crossed it: fewer Segments can't fix a mesh already over
+            added.append(f"it takes the mesh from {before:,} to {after:,} triangles, over the {budget:,} budget: use fewer Segments")
     for modifier in obj.modifiers:
         if modifier.type == "WEIGHTED_NORMAL":
             modifier.use_pin_to_last = True  # one added by hand may sit before the Bevel
