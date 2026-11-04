@@ -1,6 +1,6 @@
 """Phase 0: engine profiles, object roles, per-engine export layouts, heatmaps,
 accepted warnings, JSON/HTML reports and the batch CLI."""
-import sys, os, traceback, json, shutil, struct
+import sys, os, traceback, json, shutil, struct, contextlib, io
 HERE = os.path.dirname(os.path.abspath(__file__))
 REPO = os.path.dirname(HERE)
 OUT_DIR = os.path.join(HERE, "_out")
@@ -283,6 +283,23 @@ try:
     code, files = files_of("--jobs", "2", corrupt, ok_blend)
     check("cli --jobs: a corrupt .blend fails on its own, the other file is still validated",
           code == 1 and not files[0]["passed"] and "before writing a report" in files[0]["results"][0]["message"] and files[1]["passed"],
+          str([(f["file"], f["passed"], f["results"][:1]) for f in files]))
+    spawned, real_run = [], cli.subprocess.run
+    cli.subprocess.run = lambda command, **kw: spawned.append(command) or real_run(command, **kw)
+    try:
+        with contextlib.redirect_stdout(io.StringIO()) as console:
+            parallel = files_of("--jobs", "2", ok_blend, bad_blend, ok_blend)
+        starts = len(spawned)
+        code, files = files_of("--jobs", "2", corrupt, ok_blend, bad_blend)  # shares: [corrupt, bad], [ok]
+    finally:
+        cli.subprocess.run = real_run
+    sections = [line[4:] for line in console.getvalue().splitlines() if line.startswith("### ")]
+    check("cli --jobs: 3 files on 2 jobs start 2 Blenders, not 3, with the same reports and console sections in the files' order",
+          starts == 2 and parallel == files_of("--jobs", "1", ok_blend, bad_blend, ok_blend) and sections == [ok_blend, bad_blend, ok_blend],
+          f"{starts} started, sections {sections}")
+    check("cli --jobs: a share with a corrupt .blend is run again file by file, so only that file fails",
+          [f["file"] for f in files] == [corrupt, ok_blend, bad_blend] and "before writing a report" in files[0]["results"][0]["message"]
+          and files[1]["passed"] and not files[2]["passed"] and all(r["check"] != "cli" for r in files[2]["results"]),
           str([(f["file"], f["passed"], f["results"][:1]) for f in files]))
 
     bav.unregister()

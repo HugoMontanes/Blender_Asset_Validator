@@ -7,7 +7,7 @@ Validates every mesh of each .blend's scene (or of the .blend Blender was
 opened with), with the engine and preset saved in it unless given. Exits
 with 1 if any file has errors. --factory-startup keeps an
 installed copy of the addon from loading next to this one. Several files
-are validated at once, each in its own background Blender (--jobs)."""
+are shared out among --jobs background Blenders."""
 import argparse
 import importlib
 import json
@@ -37,7 +37,7 @@ def main(argv) -> int:
     parser.add_argument("--report", help="write the results to this .json or .html file")
     # Half the logical cores: about one per physical core, and every Blender holds a whole scene in memory
     parser.add_argument("--jobs", type=int, default=max(1, (os.cpu_count() or 2) // 2),
-                        help="files validated at once, each in its own background Blender (default: half the logical "
+                        help="background Blenders the files are shared out among (default: half the logical "
                              "cores; 1 = one after another in this Blender)")
     parser.add_argument("files", nargs="*", help=".blend files (default: the one Blender opened)")
     args = parser.parse_args(argv)
@@ -78,22 +78,23 @@ def _validate_here(path, args) -> dict:
 
 
 def _validate_in_parallel(files, args) -> list:
-    """Each file in its own background Blender, this script with that file alone: the checks are
-    single-threaded Python and bpy isn't thread-safe, so processes are what use the other cores.
-    The threads only wait for them. Reports and console output come back in the files' order."""
-    with tempfile.TemporaryDirectory() as tmp, ThreadPoolExecutor(min(args.jobs, len(files))) as pool:
-        jobs = [pool.submit(_validate_in_child, path, args, Path(tmp) / str(i)) for i, path in enumerate(files)]
-        reports = []
-        for job in jobs:
-            report, output = job.result()
-            print(output)
-            reports.append(report)
-        return reports
+    """The files dealt out to `jobs` background Blenders (bpy isn't thread-safe; the threads only wait).
+    One per job, not per file: a start-up costs ~3 s (16 small props: 10 s one per file, 6 s in a row).
+    Reports and console output come back in the files' order."""
+    shares = [files[i::args.jobs] for i in range(min(args.jobs, len(files)))]
+    with tempfile.TemporaryDirectory() as tmp, ThreadPoolExecutor(len(shares)) as pool:
+        jobs = [pool.submit(_validate_in_child, share, args, Path(tmp) / str(i)) for i, share in enumerate(shares)]
+        done = [None] * len(files)
+        for i, job in enumerate(jobs):
+            done[i::len(shares)] = job.result()
+    for _, output in done:
+        print(output)
+    return [report for report, _ in done]
 
 
-def _validate_in_child(path, args, stem: Path):
-    """(file report, its console section). A Blender that dies before writing its report, on a
-    corrupt .blend say, fails that file and leaves the others alone."""
+def _validate_in_child(paths, args, stem: Path) -> list:
+    """[(file report, its console section)] per path. A Blender that dies before writing its report,
+    on a corrupt .blend say, is run again file by file, so that file fails alone."""
     report, log = stem.with_suffix(".json"), stem.with_suffix(".log")
     command = [bpy.app.binary_path, "-b", "--factory-startup", "--python-exit-code", "2", "--python", __file__,
                "--", "--jobs", "1", "--report", str(report)]
@@ -101,15 +102,18 @@ def _validate_in_child(path, args, stem: Path):
         command.append(f"--engine={args.engine}")
     if args.preset:
         command.append(f"--preset={args.preset}")
-    command.append(str(path))
+    command += map(str, paths)
     with open(log, "w", encoding="utf-8") as out:
         code = subprocess.run(command, stdout=out, stderr=subprocess.STDOUT).returncode
     text = log.read_text(encoding="utf-8", errors="replace")
     if report.exists():
-        section = text[text.find("\n### "):].split("\nReport written to")[0]  # without Blender's start-up lines
-        return json.loads(report.read_text(encoding="utf-8"))["files"][0], section
+        output = text[text.find("\n### "):].split("\nReport written to")[0]  # without Blender's start-up lines
+        sections = ["\n### " + s for s in output.split("\n### ")[1:]]
+        return list(zip(json.loads(report.read_text(encoding="utf-8"))["files"], sections))
+    if len(paths) > 1:
+        return [pair for i, path in enumerate(paths) for pair in _validate_in_child([path], args, Path(f"{stem}_{i}"))]
     crash = CheckResult(Severity.ERROR, f"Blender exited with code {code} before writing a report (a corrupt .blend?)", check_name="cli")
-    return file_report(str(path), args.engine or "", args.preset or "", [crash]), f"\n### {path}\n{text[-2000:]}"
+    return [(file_report(str(paths[0]), args.engine or "", args.preset or "", [crash]), f"\n### {paths[0]}\n{text[-2000:]}")]
 
 
 if __name__ == "__main__":

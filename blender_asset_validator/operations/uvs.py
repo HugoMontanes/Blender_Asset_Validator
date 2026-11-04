@@ -12,6 +12,8 @@ from ..core.mesh_utils import read_array
 
 _SNAP = 1e-5  # UVs closer than this are one UV vertex (Blender's own island limit is 1e-4)
 _UV_SHRINK = 1e-4
+_CROWDED = 64  # UV overlap test: triangles in one grid cell past which the grid is halved (an even layout has under 32)
+_CROWDED_ROUNDS = 8  # rounds of pairs a crowded grid tests first: tiling UVs overlap close at hand
 _CUT_ROUNDS = 4
 _MAX_GROWN = 5_000_000  # border pixels x gap disk the island gap check sorts at once: ~1 s, ~150 MB
 
@@ -228,11 +230,22 @@ def _any_triangles_overlap(tris: np.ndarray) -> bool:
     cell = (np.repeat(first[:, 0], count) + nth % width) * cells + np.repeat(first[:, 1], count) + nth // width
     order = np.argsort(cell, kind="stable")
     cell, tri = cell[order], np.repeat(np.arange(len(tris)), count)[order]
+    # A few islands far away cram the rest into a few cells (measured: 10 of 90k quads moved to
+    # u, v = 200 took a 0.6 s check past 4 min): a few rounds for an overlap close at hand, then halve
+    crowded = np.diff(np.flatnonzero(np.r_[True, cell[1:] != cell[:-1], True])).max() > _CROWDED
     axes, own_min, own_max = _sat_axes(tris)
+    same = np.arange(len(cell))
     for gap in range(1, len(cell)):
-        same = np.flatnonzero(cell[:-gap] == cell[gap:])
+        # Sorted by cell: an entry `gap` before one of its cell was `gap - 1` before one too
+        same = same[same + gap < len(cell)]
+        same = same[cell[same] == cell[same + gap]]
         if not len(same):
-            return False  # sorted by cell: no run of one cell is `gap` long
+            return False
+        if crowded and gap > _CROWDED_ROUNDS:
+            halves = _halves(lo, hi)
+            if halves is not None:
+                return any(_any_triangles_overlap(tris[half]) for half in halves)
+            crowded = False
         a, b = tri[same], tri[same + gap]
         # Test each pair once, in the cell where their bounding boxes start overlapping
         start, end = np.maximum(lo[a], lo[b]), np.minimum(hi[a], hi[b])
@@ -244,6 +257,18 @@ def _any_triangles_overlap(tris: np.ndarray) -> bool:
         if not apart.all():
             return True
     return False
+
+
+def _halves(lo: np.ndarray, hi: np.ndarray):
+    """Masks of the triangles on each side of the middle of their bounds' longer side (one across
+    it is on both), None if halving doesn't thin them out: big triangles, or all on one side."""
+    start, extent = lo.min(axis=0), hi.max(axis=0) - lo.min(axis=0)
+    axis = int(extent[1] > extent[0])
+    middle = start[axis] + extent[axis] / 2
+    below, above = hi[:, axis] <= middle, lo[:, axis] > middle
+    if not below.any() or not above.any() or len(lo) - below.sum() - above.sum() > len(lo) // 4:
+        return None
+    return ~above, ~below
 
 
 def _sat_axes(tris: np.ndarray) -> tuple:

@@ -26,11 +26,11 @@ def check_shading(objects: List[bpy.types.Object], config: dict) -> List[CheckRe
         mesh = bake_mesh(obj)  # modifiers applied: Smooth by Angle decides the hard edges
         try:
             stats = shading_stats(mesh)
-            same_topology = len(mesh.edges) == len(obj.data.edges)
+            hard = stats["hard_off_seam"]
+            selectable = _original_edges(mesh, obj.data, hard) if hard else None
         finally:
             bpy.data.meshes.remove(mesh)
 
-        hard = stats["hard_off_seam"]
         if hard:
             results.append(CheckResult(
                 severity=Severity.WARNING,
@@ -38,7 +38,7 @@ def check_shading(objects: List[bpy.types.Object], config: dict) -> List[CheckRe
                 object_name=obj.name,
                 fix_hint="Mark them as seams and re-unwrap, or soften them (Edge > Mark Smooth)",
                 check_name="shading",
-                select=partial(select_in_edit_mode, obj, "EDGE", hard) if same_topology else None,
+                select=partial(select_in_edit_mode, obj, "EDGE", selectable) if selectable is not None else None,
             ))
         results.append(CheckResult(
             severity=Severity.INFO,
@@ -66,6 +66,24 @@ def check_weighted_normal(objects: List[bpy.types.Object], config: dict) -> List
         check_name="weighted_normal",
         fix=partial(add_weighted_normal, obj),
     ) for obj in objects if not has_weighted_normal(obj)]
+
+
+def _original_edges(evaluated: bpy.types.Mesh, original: bpy.types.Mesh, edges: list):
+    """These evaluated edges' indices in the original mesh, None if the modifiers renumbered them past
+    recovery. A Triangulate (the bake helper adds one) keeps the vertices, so edges match by their ends."""
+    if len(evaluated.edges) == len(original.edges):
+        return edges
+    if len(evaluated.vertices) != len(original.vertices) or not len(original.edges):
+        return None
+
+    def keys(mesh):
+        ends = np.sort(read_array(mesh.edges, "vertices", 2, np.int64), axis=1)
+        return ends[:, 0] * len(mesh.vertices) + ends[:, 1]
+
+    known, wanted = keys(original), keys(evaluated)[edges]
+    order = np.argsort(known)
+    found = order[np.minimum(np.searchsorted(known, wanted, sorter=order), len(known) - 1)]
+    return found.tolist() if (known[found] == wanted).all() else None
 
 
 def shading_stats(mesh: bpy.types.Mesh) -> dict:

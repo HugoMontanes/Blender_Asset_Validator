@@ -65,12 +65,24 @@ def check_bake_pairs(objects: List[bpy.types.Object], config: dict) -> List[Chec
     low_suffix, high_suffix = cfg.get("low_suffix", "_low"), cfg.get("high_suffix", "_high")
     for obj in objects:
         base = high_owner(obj.name, config)
-        lows = [bpy.context.scene.objects.get(name) for name in (base, base + low_suffix)]
-        if not any(o is not None and o.type == "MESH" and role(o, config) == "asset" for o in lows):
+        # The lows highs_of pairs it with: Chair_low_high goes with Chair_low_low, not with Chair_low
+        names = (base + low_suffix,) if not low_suffix or base.endswith(low_suffix) else (base, base + low_suffix)
+        lows = [o for o in map(bpy.context.scene.objects.get, names)
+                if o is not None and o.type == "MESH" and role(o, config) == "asset"]
+        if len(lows) > 1:
             results.append(CheckResult(
                 severity=Severity.WARNING,
-                message=f"'{obj.name}' is a high-poly mesh (its name has {high_suffix}), but there's no '{base}' or "
-                        f"'{base}{low_suffix}' to bake onto: it won't be checked or exported",
+                message=f"'{obj.name}' bakes onto both '{base}' and '{base}{low_suffix}': they'd share the "
+                        f"normal map {base}_N, and Export Bake Pairs can't name both {base}{low_suffix}",
+                object_name=obj.name,
+                fix_hint="Rename one of the two low-poly meshes",
+                check_name="bake_pairs",
+            ))
+        elif not lows:
+            results.append(CheckResult(
+                severity=Severity.WARNING,
+                message=f"'{obj.name}' is a high-poly mesh (its name has {high_suffix}), but there's no "
+                        f"{' or '.join(repr(n) for n in names)} to bake onto: it won't be checked or exported",
                 object_name=obj.name,
                 fix_hint=f"Rename it after its low-poly, or drop {high_suffix} from the name if it's an asset",
                 check_name="bake_pairs",

@@ -11,7 +11,9 @@ from ..core.mesh_utils import read_array
 from ..core.roles import bake_base
 
 _SAMPLES = 16  # anti-aliasing of the bake; the render's samples (4096 by default) would take minutes
-_MAX_PROBES = 100_000  # high-poly vertices measured; a random sample past that
+# ponytail: a random sample past this many high vertices; a spike of a few vertices can miss it and the
+# cage comes out short (the 10 % pad covers a dense bump). Measure them all if a real high shows it.
+_MAX_PROBES = 100_000
 _MAX_OFFSET = 0.1  # median high-to-low distance, of the low's diagonal, past which the pair isn't on top of each other
 
 
@@ -68,8 +70,9 @@ def add_triangulate(obj: bpy.types.Object):
     the tangent basis changes with the diagonal: a Triangulate modifier gives all three the same triangles."""
     if any(m.type == "TRIANGULATE" and m.show_viewport for m in obj.modifiers):
         return None
-    obj.modifiers.new("Triangulate", "TRIANGULATE").keep_custom_normals = True  # lands before a pinned Weighted Normal
-    return "Triangulate added"
+    modifier = obj.modifiers.new("Triangulate", "TRIANGULATE")  # lands before a pinned Weighted Normal
+    modifier.keep_custom_normals = True
+    return modifier
 
 
 def bake_normals(low: bpy.types.Object, highs: list, config: dict) -> str:
@@ -81,7 +84,7 @@ def bake_normals(low: bpy.types.Object, highs: list, config: dict) -> str:
     cfg, uv = config.get("bake", {}), config.get("uv", {})
     size = uv.get("texture_size", 2048)
     extrusion, ray = ray_distances(low, highs)  # first: it may raise, and nothing is changed yet
-    notes = [note for note in (add_triangulate(low),) if note]
+    triangulate = add_triangulate(low)
 
     name = f"{bake_base(low, config)}_N"
     image = bpy.data.images.get(name) or bpy.data.images.new(name, size, size, is_data=True)
@@ -102,13 +105,21 @@ def bake_normals(low: bpy.types.Object, highs: list, config: dict) -> str:
             nodes.active = node  # the bake writes into the active image node
         scene.render.engine, scene.cycles.samples = "CYCLES", _SAMPLES
         selected = [low, *highs]
-        with bpy.context.temp_override(selected_objects=selected, selected_editable_objects=selected, active_object=low, object=low):
-            bpy.ops.object.bake(
-                type="NORMAL", normal_space="TANGENT", normal_g=cfg.get("normal_g", "POS_Y"),
-                use_selected_to_active=True, cage_extrusion=extrusion, max_ray_distance=ray,
-                margin=max(1, uv.get("min_island_gap_px", 8) // 2),  # the paddings of two islands meet mid-gap
-                uv_layer=low.data.uv_layers[0].name, use_clear=True, target="IMAGE_TEXTURES",
-            )
+        try:
+            with bpy.context.temp_override(selected_objects=selected, selected_editable_objects=selected, active_object=low, object=low):
+                # An option left out comes from the scene's Bake panel (measured: its cage object and
+                # normal_r leaked in), so every one that changes the result is given
+                bpy.ops.object.bake(
+                    type="NORMAL", normal_space="TANGENT", normal_r="POS_X", normal_g=cfg.get("normal_g", "POS_Y"),
+                    normal_b="POS_Z", use_selected_to_active=True, use_cage=False, cage_extrusion=extrusion,
+                    max_ray_distance=ray, margin_type="ADJACENT_FACES",
+                    margin=max(1, uv.get("min_island_gap_px", 8) // 2),  # the paddings of two islands meet mid-gap
+                    uv_layer=low.data.uv_layers[0].name, use_clear=True, target="IMAGE_TEXTURES",
+                )
+        except RuntimeError as e:  # Blender's own refusals, such as a low that's disabled for rendering
+            if triangulate is not None:  # nothing was baked through it, and a cancelled operator leaves no undo step
+                low.modifiers.remove(triangulate)
+            raise ValueError(str(e).removeprefix("Error: ").strip()) from e
     finally:
         for tree, node, active in added:
             tree.nodes.remove(node)
@@ -120,5 +131,5 @@ def bake_normals(low: bpy.types.Object, highs: list, config: dict) -> str:
     image.filepath_raw = os.path.join(folder, f"{name}.png")
     image.file_format = "PNG"
     image.save()
-    notes.append(f"{name}.png ({size} px, {len(highs)} high mesh(es), cage {extrusion:.3g} m, ray {ray:.3g} m, green {cfg.get('normal_g', 'POS_Y')})")
-    return ", ".join(notes)
+    note = f"{name}.png ({size} px, {len(highs)} high mesh(es), cage {extrusion:.3g} m, ray {ray:.3g} m, green {cfg.get('normal_g', 'POS_Y')})"
+    return f"Triangulate added, {note}" if triangulate is not None else note

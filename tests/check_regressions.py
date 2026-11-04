@@ -158,6 +158,33 @@ try:
     t = time.perf_counter(); uvs.check_uvs([nan_uv], CFG); elapsed = time.perf_counter() - t
     check("UV overlap with a NaN UV stays fast", elapsed < 1.0, f"{elapsed:.2f}s")
 
+    # a few islands far off (tiling, a stray island) must not cram the rest into a few overlap-grid cells
+    bm = bmesh.new(); bm.loops.layers.uv.new()
+    bmesh.ops.create_grid(bm, x_segments=80, y_segments=80, size=1.0, calc_uvs=True)  # 12.8k tris: ~6 s without halving
+    far_uv = mk("FarUV", bm)
+    layer = far_uv.data.uv_layers.active.data
+    for poly in list(far_uv.data.polygons)[-10:]:
+        for i in poly.loop_indices:
+            layer[i].uv = (layer[i].uv[0] + 200, layer[i].uv[1] + 200)
+    t = time.perf_counter(); r = uvs.check_uvs([far_uv], CFG); elapsed = time.perf_counter() - t
+    check("UV overlap with 10 quads far away stays fast and finds no overlap", elapsed < 1.0 and not r, f"{elapsed:.2f}s {[x.message for x in r]}")
+    import numpy as np
+    from blender_asset_validator.operations import uvs as uv_ops
+    rng, wrong, limits = np.random.default_rng(3), [], (uv_ops._CROWDED, uv_ops._CROWDED_ROUNDS)
+    uv_ops._CROWDED = uv_ops._CROWDED_ROUNDS = 0  # halve right away, whenever halving thins them out
+    for k in range(3, 30):  # a triangle per cell of a k*k grid (no overlap), some moved far, maybe one stray
+        soup = (np.stack(np.meshgrid(np.arange(k), np.arange(k), indexing="ij"), -1).reshape(-1, 1, 2) + rng.uniform(0.05, 0.95, (k * k, 3, 2))) / k
+        soup[rng.random(k * k) < 0.2] += 200.0
+        if k % 2:
+            soup = np.concatenate([soup, rng.uniform(0, 1, (1, 1, 2)) + rng.uniform(0, 0.3, (1, 3, 2))])
+        axes, lo_, hi_ = uv_ops._sat_axes(soup)
+        a, b = np.triu_indices(len(soup), 1)  # every pair: the answer without any grid
+        brute = not (uv_ops._separated(axes[a], lo_[a], hi_[a], soup[b]) | uv_ops._separated(axes[b], lo_[b], hi_[b], soup[a])).all()
+        if uv_ops._any_triangles_overlap(soup) != brute:
+            wrong.append(k)
+    uv_ops._CROWDED, uv_ops._CROWDED_ROUNDS = limits
+    check("UV overlap halving gives the every-pair answer on 27 triangle soups", not wrong, f"wrong at k={wrong}")
+
     # flat_angle from config drives LOD planar dissolve too
     bm = bmesh.new(); bmesh.ops.create_uvsphere(bm, u_segments=16, v_segments=8, radius=1.0)
     lo = mk("LowSphere", bm)

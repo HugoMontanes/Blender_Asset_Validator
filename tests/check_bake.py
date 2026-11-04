@@ -28,6 +28,7 @@ try:
     import blender_asset_validator as bav
     from blender_asset_validator.core import engine, roles
     from blender_asset_validator.operations import bake, hard_surface
+    from blender_asset_validator.checks.shading import check_shading
     from io_scene_fbx import parse_fbx
     bav.register()
     say("register OK, Blender " + bpy.app.version_string)
@@ -116,6 +117,10 @@ try:
     check("AC-1: Crate_low pairs with Crate_high", roles.highs_of(crate_low, config()) == [crate_high])
     check("AC-1: the roles", [roles.role(bpy.data.objects[n], config()) for n in ("Box", "Box_high.001", "Box_highlight", "Crate_low")]
           == ["asset", "high", "asset", "asset"])
+    pair_low, stray = cube("Pair_low"), cube("Pair_low_high", material=False, uv=False)
+    warned = [r.message for r in engine.run_validation(config(), [stray])]
+    check("Pair_low_high isn't Pair_low's high (Pair_low bakes from Pair_high), and check_bake_pairs agrees with highs_of",
+          not roles.highs_of(pair_low, config()) and len(warned) == 1 and "no 'Pair_low_low' to bake onto" in warned[0], str(warned))
 
     # AC-2: a high skips the checks and the tools
     messy = from_bm("Box_high_messy", lambda bm: bmesh.ops.create_circle(bm, cap_ends=True, segments=8, radius=1.0), material=False, uv=False)
@@ -178,6 +183,18 @@ try:
     check("AC-4: the bevel tilts the pixels along the edges", tilted.mean() > 0.02, f"{tilted.mean():.1%} of the texture")
     check("AC-4: DirectX green = 1 - OpenGL green, red and blue the same",
           np.abs(directx[tilted, 1] - (1 - opengl[tilted, 1])).max() < 0.01 and np.abs(directx[tilted][:, [0, 2]] - opengl[tilted][:, [0, 2]]).max() < 0.01)
+    far_cage = cube("FarCage", material=False, uv=False); far_cage.location.x = 50
+    panel = scene.render.bake  # what bpy.ops.object.bake reads for every option it isn't given
+    panel.normal_r, panel.margin_type, panel.use_cage, panel.cage_object = "NEG_X", "EXTEND", True, far_cage
+    try:
+        bake.bake_normals(bev, roles.highs_of(bev, config()), config("POS_Y"))
+        leaked = np.abs(pixels(bpy.data.images["Bev_N"]) - opengl).max()
+    except Exception as e:
+        leaked = f"{type(e).__name__}: {e}"
+    panel.normal_r, panel.margin_type, panel.use_cage, panel.cage_object = "POS_X", "ADJACENT_FACES", False, None
+    bpy.data.objects.remove(far_cage)
+    check("the scene's Bake panel (a cage object, red channel, margin type) doesn't change the bake",
+          not isinstance(leaked, str) and leaked < 0.01, str(leaked))
     png = os.path.join(WORK, "Bev_N.png")
     saved = bpy.data.images.load(png, check_existing=False) if os.path.exists(png) else None
     check("AC-4: Bev_N.png on disk at the profile's size", saved is not None and tuple(saved.size) == (SIZE, SIZE), msg)
@@ -204,6 +221,27 @@ try:
         except ValueError as e:
             error = str(e)
         check(f"edge case: {name} isn't baked and says why", error and not low.modifiers and f"{name}_N" not in bpy.data.images, error)
+    hidden = cube("Hidden")
+    cube("Hidden_high", size=2.04, material=False, uv=False)
+    hidden.hide_render = True
+    try:
+        bake.bake_normals(hidden, roles.highs_of(hidden, config()), config()); error = ""
+    except Exception as e:
+        error = f"{type(e).__name__}: {e}"
+    check("a low disabled for rendering isn't baked: Blender's reason as a ValueError, and no Triangulate left",
+          error.startswith("ValueError") and "not enabled for rendering" in error and not hidden.modifiers, error)
+
+    # check_shading after the bake's Triangulate: same vertices, more edges
+    sharp = cube("Sharp", uv=False)
+    for p in sharp.data.polygons:
+        p.use_smooth = True
+    for i in (0, 3, 5):
+        sharp.data.edges[i].use_edge_sharp = True
+    bake.add_triangulate(sharp)
+    warning = [r for r in check_shading([sharp], config()) if r.severity.value == "WARNING"]
+    check("after a Triangulate, check_shading still selects the hard edges, by their original indices",
+          len(warning) == 1 and warning[0].select is not None and sorted(warning[0].select.args[2]) == [0, 3, 5],
+          str([(r.message, r.select and r.select.args[2]) for r in warning]))
 
     # The operators, with the .blend saved and the project's rules next to it
     bpy.ops.wm.save_as_mainfile(filepath=os.path.join(WORK, "bake_test.blend"))
@@ -219,6 +257,17 @@ try:
     select(flat, lonely)
     r = run(bpy.ops.asset_validator.bake_normals)
     check("AC-7: Bake Normals runs from bpy.ops into //bakes/", r == {"FINISHED"} and os.path.exists(os.path.join(WORK, "bakes", "Flat_N.png")), str(r))
+    select(hidden, flat)
+    r = run(bpy.ops.asset_validator.bake_normals)
+    check("Bake Normals goes on past a low that Blender refuses to bake", r == {"FINISHED"}, str(r))
+    twin, twin_low = cube("Twin"), cube("Twin_low")
+    twin_high = cube("Twin_high", size=2.04, material=False, uv=False)
+    warned = [r.message for r in engine.run_validation(config(), [twin_high])]
+    check("a high with two lows, Twin and Twin_low, warns", len(warned) == 1 and "bakes onto both" in warned[0], str(warned))
+    select(twin, twin_low)
+    r = run(bpy.ops.asset_validator.bake_normals)
+    check("Bake Normals bakes only one of Twin and Twin_low into Twin_N",
+          r == {"FINISHED"} and sorted(bool(o.modifiers) for o in (twin, twin_low)) == [False, True], str(r))
 
     # AC-2: Export writes the asset without its highs
     select(box, *roles.highs_of(box, config()))

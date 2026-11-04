@@ -2,7 +2,7 @@ import bpy
 
 from . import ObjectModeOnly
 from ..core.engine import load_config
-from ..core.roles import highs_of
+from ..core.roles import bake_base, highs_of
 from ..operations.bake import bake_normals
 from ..ui.redraw import redraw_view3d
 from .uvs import asset_meshes
@@ -30,15 +30,18 @@ class ASSET_VALIDATOR_OT_bake_normals(ObjectModeOnly, bpy.types.Operator):
             self.report({"ERROR"}, f"Select the low-poly asset meshes that the {suffix} meshes bake onto")
             return {"CANCELLED"}
 
-        lines, baked = [], 0
+        lines, baked = [], {}  # base name -> the low baked into <base>_N
         for low in lows:
-            highs = highs_of(low, config)
+            highs, base = highs_of(low, config), bake_base(low, config)
             if not highs:
                 lines.append(f"'{low.name}': no {suffix} mesh to bake from")
                 continue
+            if base in baked:  # Chair and Chair_low: both would bake into Chair_N
+                lines.append(f"'{low.name}': not baked, '{baked[base]}' already baked into {base}_N. Rename one of them")
+                continue
             try:
                 lines.append(f"'{low.name}': {bake_normals(low, highs, config)}")
-                baked += 1
+                baked[base] = low.name
             except ValueError as e:
                 lines.append(f"'{low.name}': not baked, {e}")
         print("\n".join(lines))
