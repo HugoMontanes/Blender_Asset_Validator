@@ -356,6 +356,18 @@ check("Auto Unwrap operator with Straighten runs and leaves 6 clean islands",
       str(unwrap_report(straight, config(texel_density=0))))
 check("auto unwrap restores Object Mode and the selection", bpy.context.mode == "OBJECT" and straight.select_get()
       and bpy.context.view_layer.objects.active == straight)
+# Straightening cost the whole mesh per island: 85 s on a papercraft robot's 8,475 islands, most of them one
+# face. Like it: 1,500 one-quad islands and 100 two-quad ones next to a 20k-triangle part
+def strips(bm):
+    bmesh.ops.create_icosphere(bm, subdivisions=6, radius=5.0, calc_uvs=True)
+    for k in range(1600):
+        verts = bmesh.ops.create_grid(bm, x_segments=2 if k % 16 == 0 else 1, y_segments=1, size=0.4, calc_uvs=True)["verts"]
+        bmesh.ops.translate(bm, vec=(10 + k % 40, k // 40, 0), verts=verts)
+many = from_bm("ManyIslands", strips)
+t = time.perf_counter()
+uvs._straighten_quads(many, uvs.uv_stats(many, many.data.uv_layers[0])["island"])
+check("straightening 1,600 quad islands on a 20k-face mesh takes seconds, not minutes", time.perf_counter() - t < 3,
+      f"{time.perf_counter() - t:.1f} s")
 
 # ---------- guided step + full validation ----------
 select(box)
