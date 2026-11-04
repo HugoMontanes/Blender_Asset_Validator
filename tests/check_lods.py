@@ -132,6 +132,14 @@ try:
     lod_ops.generate_lods([dups], CFG)
     invalid = [l.name for l in lod_ops.lods_of(dups) if engine._invalid_mesh(l.data)]
     check("LODs come out as valid meshes (no duplicate faces), even from a source with some", len(lod_ops.lods_of(dups)) == 3 and not invalid, str(invalid))
+    # A copy of a LOD keeps its properties: regenerating deleted it with the LODs, and the tools skipped it
+    from blender_asset_validator.core.roles import role, lod_source
+    renamed = lod_ops.lods_of(dups)[0]; renamed.name = "SM_Dups_LOD1"  # renamed, then copied: the copy isn't the LOD
+    kept = renamed.copy(); bpy.context.scene.collection.objects.link(kept)
+    lod_ops.generate_lods([dups], CFG)
+    check("a copy of a LOD survives regenerating them, as an asset of its own",
+          kept.name in bpy.data.objects and role(kept, CFG) == "asset" and lod_source(kept) is None
+          and kept not in lod_ops.lods_of(dups) and [role(l, CFG) for l in lod_ops.lods_of(dups)] == ["lod"] * 3, kept.name)
     bav.unregister()
     say("DONE")
 except Exception:

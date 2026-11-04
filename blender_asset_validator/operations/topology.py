@@ -16,6 +16,7 @@ from mathutils.bvhtree import BVHTree
 from mathutils.geometry import barycentric_transform
 
 from ..core.mesh_utils import bake_mesh, read_array
+from ..core.roles import lod_source
 
 _UV_EPSILON = 1e-5
 _MAX_DISSOLVE_PASSES = 32
@@ -41,7 +42,7 @@ def clean_topology(obj: bpy.types.Object, config: dict) -> Optional[str]:
     """In place on obj.data: tris -> quads, dissolve flat edge loops, relax the
     free vertices along the surface. Borders, seams, UV/material borders and
     hard edges stay where they are, so shape and UVs survive."""
-    source = obj.get("asset_validator_lod_source")
+    source = lod_source(obj)
     target = bake_mesh(source) if source is not None else obj.data  # LODs relax onto the full-res source
     surface = Surface(target)
     if target is not obj.data:

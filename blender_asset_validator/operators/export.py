@@ -7,7 +7,7 @@ from mathutils import Matrix
 from . import ObjectModeOnly
 from ..core.engine import get_validation_objects, load_config, validate_and_store
 from ..core.result import Severity
-from ..core.roles import bake_base, collisions_of, highs_of, renamed_collision, role, sockets_of
+from ..core.roles import bake_base, collisions_of, highs_of, is_lod, renamed_collision, role, sockets_of
 from ..operations.bake import add_triangulate
 from ..operations.heatmap import clear_heatmap
 from ..operations.lod import lods_of
@@ -103,7 +103,7 @@ def _engine_layout(context, config, obj, parts):
     (written as an FBX LOD Group node) over Name_LOD0..n, and the UCX_ meshes
     renamed after Name_LOD0, the mesh Unreal matches them to."""
     target = config.get("lod", {}).get("export_target", "none")
-    lods = [p for p in parts if p.get("asset_validator_lod", False)]
+    lods = [p for p in parts if is_lod(p)]
     if target == "none" or not lods:
         yield parts
         return

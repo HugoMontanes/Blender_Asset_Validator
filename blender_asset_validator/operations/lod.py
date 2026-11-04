@@ -4,13 +4,11 @@ import bmesh
 import bpy
 
 from ..core.mesh_utils import bake_mesh
+from ..core.roles import LOD_LEVEL as _LEVEL, LOD_MARKER as _MARKER, LOD_SLOT, LOD_SOURCE as _SOURCE, is_lod
 from ..core.steps import APPROVED
 from .cleanup import delete_loose, fix_normals
 from .topology import Surface, topology_settings, transfer_normals, clean_bmesh, feature_verts
 
-_MARKER = "asset_validator_lod"
-_SOURCE = "asset_validator_lod_source"
-_LEVEL = "asset_validator_lod_level"
 _PROTECT_GROUP = "AssetValidator_LOD_Protect"
 _PROTECT_FACTOR = 10.0  # collapse cost added to protected edges
 # Not 0: the collapse decimator never collapses an edge whose two weights are both ~0,
@@ -21,7 +19,7 @@ _PROTECTED_WEIGHT = 0.001
 def lods_of(obj: bpy.types.Object) -> List[bpy.types.Object]:
     """LOD copies generated from `obj`, ordered LOD1, LOD2, ..."""
     return sorted(
-        (o for o in bpy.data.objects if o.get(_SOURCE) == obj),
+        (o for o in bpy.data.objects if o.get(_SOURCE) == obj and is_lod(o)),
         key=lambda o: o.get(_LEVEL, 0),
     )
 
@@ -47,7 +45,7 @@ def generate_lods(objects: List[bpy.types.Object], config: dict) -> List[str]:
     clean = settings if cfg.get("clean_topology", False) else None
 
     for obj in objects:
-        if obj.get(_MARKER, False):
+        if is_lod(obj):
             continue  # don't generate LODs of LODs
 
         for old_lod in lods_of(obj):
@@ -75,7 +73,9 @@ def generate_lods(objects: List[bpy.types.Object], config: dict) -> List[str]:
             lod_obj[_MARKER] = True
             lod_obj[_SOURCE] = obj  # ID pointer, survives renaming the source
             lod_obj[_LEVEL] = level_idx
-            lod_obj.pop(APPROVED, None)  # copied from the source: the decimated mesh passed no step yet
+            for key in [k for k in lod_obj.keys() if k == APPROVED or k.startswith(LOD_SLOT.format(""))]:
+                del lod_obj[key]  # copied from the source: its step approvals and its pointers to its LODs
+            obj[LOD_SLOT.format(level_idx)] = lod_obj
             group = lod_obj.vertex_groups.get(_PROTECT_GROUP)
             if group is not None:
                 lod_obj.vertex_groups.remove(group)

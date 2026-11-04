@@ -3,6 +3,7 @@ from typing import Optional
 import bpy
 
 from ..core.mesh_utils import evaluated_triangle_count
+from ..core.roles import is_lod
 
 _MODIFIER_NAME = "AssetValidator_Decimate"
 
@@ -19,7 +20,7 @@ def fix_polycount(obj: bpy.types.Object, config: dict) -> Optional[str]:
     """Fixer for check_polycount. Sizes a Decimate modifier against the
     evaluated (modifiers-applied) triangle count, so re-validation — which
     also reads the evaluated mesh — actually sees the reduction."""
-    if obj.get("asset_validator_lod", False):
+    if is_lod(obj):
         return None  # LOD copies carry their own hand-picked ratio — don't compound it
 
     budget = config.get("geometry", {}).get("max_triangles", 50000)

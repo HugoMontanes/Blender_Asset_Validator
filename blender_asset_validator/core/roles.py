@@ -8,8 +8,29 @@ from typing import List, Optional
 import bpy
 
 
+LOD_MARKER = "asset_validator_lod"
+LOD_SOURCE = "asset_validator_lod_source"  # on a LOD: its source object
+LOD_LEVEL = "asset_validator_lod_level"
+LOD_SLOT = "asset_validator_lod_object_{}"  # on the source, per level: the LOD object generate_lods made
+
+
+def is_lod(obj: bpy.types.Object) -> bool:
+    """A LOD generate_lods made, renamed or not, but not a copy of one: a copy keeps its properties, and
+    regenerating the LODs deleted the user's copies with them. The source points back at the one it made
+    (Blender doesn't repoint that at a copy); LODs from before the back pointer count as made."""
+    if not obj.get(LOD_MARKER, False):
+        return False
+    source, slot = obj.get(LOD_SOURCE), LOD_SLOT.format(obj.get(LOD_LEVEL, 0))
+    return source is None or slot not in source or source[slot] == obj
+
+
+def lod_source(obj: bpy.types.Object):
+    """The source object of a LOD generate_lods made, else None."""
+    return obj.get(LOD_SOURCE) if is_lod(obj) else None
+
+
 def role(obj: bpy.types.Object, config: dict) -> str:
-    if obj.get("asset_validator_lod", False):
+    if is_lod(obj):
         return "lod"
     if obj.type == "MESH" and collision_owner(obj, config) is not None:
         return "collision"
