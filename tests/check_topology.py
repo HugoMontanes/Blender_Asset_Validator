@@ -270,6 +270,58 @@ try:
     msg = topo.clean_topology(lod1, CFG)
     check("clean on an existing LOD (relaxes onto source)", surf_dev(lod1, s_big) < 1e-3 and lod1.data.has_custom_normals, msg)
 
+    # 9. relaxing must not jump a vertex onto another surface (and UV island) nearer than its own, as on a real gun's
+    # parts: the far side of a thin wall, or a part inside another facing the same way
+    for case, flip in (("thin wall", True), ("part inside", False)):
+        bm = new_bm(); uv = bm.loops.layers.uv.active
+        bmesh.ops.create_uvsphere(bm, u_segments=32, v_segments=16, radius=1.0, calc_uvs=True)
+        outer = set(bm.faces)
+        bmesh.ops.create_uvsphere(bm, u_segments=32, v_segments=16, radius=0.985, calc_uvs=True)  # thinner than a relax step, thicker than the facets dip
+        inner_faces = {f for f in bm.faces if f not in outer}
+        if flip: bmesh.ops.reverse_faces(bm, faces=list(inner_faces))
+        for f in bm.faces:
+            for l in f.loops: l[uv].uv.y = l[uv].uv.y * 0.45 + (0.55 if f in inner_faces else 0.0)
+        shell = obj_from_bm("Shell", bm, smooth=True)
+        radii = [v.co.length for v in shell.data.vertices]
+        msg = topo.clean_topology(shell, CFG)
+        me = shell.data
+        jumped = sum(1 for v in me.vertices if (v.co.length > 0.988) != (radii[v.index] > 0.988)) if len(radii) == len(me.vertices) else -1
+        mixed = sum(1 for p in me.polygons if len({me.uv_layers.active.data[i].uv.y >= 0.5 for i in p.loop_indices}) > 1)
+        check(f"clean {case}: no vertex jumps to the other surface", jumped == 0, f"{jumped} jumped; {msg}")
+        check(f"clean {case}: no face straddles two UV islands", mixed == 0, f"{mixed} faces")
+
+    # the same thin wall as one island (two hemispheres bridged at the rim, mapped from above): only facing tells the sides apart
+    bm = new_bm(); uv = bm.loops.layers.uv.active
+    for radius in (1.0, 0.985):
+        made = bmesh.ops.create_uvsphere(bm, u_segments=32, v_segments=16, radius=radius)["verts"]
+        bmesh.ops.delete(bm, geom=[v for v in made if v.co.z < -1e-6], context="VERTS")
+    bmesh.ops.reverse_faces(bm, faces=[f for f in bm.faces if f.calc_center_median().length < 0.99])
+    bmesh.ops.bridge_loops(bm, edges=[e for e in bm.edges if e.is_boundary])
+    for f in bm.faces:
+        for l in f.loops: l[uv].uv = (l.vert.co.x * 0.5 + 0.5, l.vert.co.y * 0.5 + 0.5)
+    cap = obj_from_bm("Cap", bm, smooth=True)
+    radii = [v.co.length for v in cap.data.vertices]
+    msg = topo.clean_topology(cap, CFG)
+    jumped = sum(1 for v in cap.data.vertices if (v.co.length > 0.988) != (radii[v.index] > 0.988)) if len(radii) == len(cap.data.vertices) else -1
+    check("clean thin wall, one UV island: no vertex jumps to the other side", jumped == 0, f"{jumped} jumped; {msg}")
+
+    # a narrow UV strip between two seams, as along a gun's bevels: relaxing shrinks its middle ring past the inner
+    # seam, and clamping it onto its own island's border flattened the quads there to nothing
+    bm = new_bm(); uv = bm.loops.layers.uv.active
+    radii = (0.5, 1.0, 1.02, 1.04, 1.5)
+    rings = [[bm.verts.new((r * math.cos(a), r * math.sin(a), 0)) for a in
+              (2 * math.pi * (i + (0.15 * (-1) ** i if r == 1.02 else 0)) / 16 for i in range(16))] for r in radii]  # jittered: not a dissolvable loop
+    for band in range(4):
+        for i in range(16):
+            j = (i + 1) % 16
+            f = bm.faces.new((rings[band][i], rings[band][j], rings[band + 1][j], rings[band + 1][i]))
+            island = (0, 1, 1, 2)[band]
+            for l in f.loops: l[uv].uv = (l.vert.co.x * 0.1 + 0.2 + island * 0.3, l.vert.co.y * 0.1 + 0.5)
+    strip = obj_from_bm("Strip", bm)
+    msg = topo.clean_topology(strip, CFG)
+    smallest = min(p.area for p in strip.data.polygons)
+    check("clean narrow UV strip: no face flattened onto a seam", smallest > 1e-5, f"smallest face {smallest:.2e}; {msg}")
+
     bav.unregister()
     say("DONE")
 except Exception:

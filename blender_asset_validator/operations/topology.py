@@ -17,6 +17,7 @@ from mathutils.geometry import barycentric_transform
 
 from ..core.mesh_utils import bake_mesh, read_array
 from ..core.roles import lod_source
+from .uvs import face_islands
 
 _UV_EPSILON = 1e-5
 _MAX_DISSOLVE_PASSES = 32
@@ -562,20 +563,27 @@ def _relax(bm, surface: "Surface", cfg) -> None:
     """Laplacian smoothing projected back onto the original surface: evens out
     the edge flow tangentially without changing the shape."""
     pinned = feature_verts(bm, cfg["feature"])
-    free = [v for v in bm.verts if v not in pinned and v.link_edges]
+    bm.normal_update()
+    min_dot = math.cos(cfg["feature"])
+    free = []  # each free vertex with its normal and the UV island it starts on, which it must stay on
+    for v in bm.verts:
+        start = None if v in pinned or not v.link_edges else surface.nearest_on(v.co, v.normal, None, min_dot, 0.0)
+        if start is not None:
+            free.append((v, v.normal.copy(), surface.islands[start[2]]))
+    tris = [None] * len(free)  # the source triangle each vertex last landed on
     for _ in range(cfg["iterations"]):
-        targets = [sum((e.other_vert(v).co for e in v.link_edges), Vector()) / len(v.link_edges) for v in free]
-        for v, target in zip(free, targets):
-            hit = surface.nearest(v.co.lerp(target, cfg["factor"]))
+        targets = [sum((e.other_vert(v).co for e in v.link_edges), Vector()) / len(v.link_edges) for v, _, _ in free]
+        for i, ((v, normal, island), target) in enumerate(zip(free, targets)):
+            co = v.co.lerp(target, cfg["factor"])
+            hit = surface.nearest_on(co, normal, island, min_dot, (co - v.co).length)
             if hit is not None:
-                v.co = hit[0]
+                v.co, tris[i] = hit[0], hit[2]
     uv_layers = list(bm.loops.layers.uv.values())
-    for v in free:
-        hit = surface.nearest(v.co)
-        if hit is None:
-            continue
+    for (v, _, _), tri in zip(free, tris):
+        if tri is None:
+            continue  # never moved: its UVs are still right
         for layer_idx, layer in enumerate(uv_layers):
-            uv = surface.uv_at(v.co, hit[2], layer_idx)
+            uv = surface.uv_at(v.co, tri, layer_idx)
             for loop in v.link_loops:
                 loop[layer].uv = uv
 
@@ -584,9 +592,16 @@ class Surface:
     """Triangulated snapshot of a mesh to project onto and sample UVs/materials from."""
 
     def __init__(self, mesh: bpy.types.Mesh):
+        # ponytail: face_islands costs ~6 s per million faces (a 2.5M-face LOD source: 23 -> 40 s of Clean Topology);
+        # loose parts instead (no UV sort) if that matters, at the price of islands within one part
+        islands = face_islands(mesh, mesh.uv_layers[0]) if mesh.uv_layers else np.zeros(len(mesh.polygons), dtype=np.int64)
         bm = bmesh.new()
         bm.from_mesh(mesh)
+        poly = bm.faces.layers.int.new("_AssetValidator_poly")
+        for i, face in enumerate(bm.faces):
+            face[poly] = i
         bmesh.ops.triangulate(bm, faces=bm.faces)
+        self.islands = [int(islands[face[poly]]) for face in bm.faces]  # UV0 island per triangle
         layers = list(bm.loops.layers.uv.values())
         self.tris = [
             (
@@ -602,6 +617,19 @@ class Surface:
     def nearest(self, co):
         hit = self.bvh.find_nearest(co)
         return None if hit[0] is None else hit
+
+    def nearest_on(self, co, normal, island, min_dot, reach):
+        """Nearest point on a triangle of `island` (None: any) facing like `normal`, and above or below `co`, within
+        `reach` unless the nearest of all is one: inside a thin wall, or a part inside another, the nearest is another
+        surface. One beside `co` is the island's border: moving there flattened the face between onto a seam."""
+        def own(hit):
+            return (hit[0] is not None and hit[1].dot(normal) >= min_dot and island in (None, self.islands[hit[2]])
+                    and abs((hit[0] - co).dot(normal)) >= min_dot * hit[3])
+
+        hit = self.bvh.find_nearest(co)
+        if own(hit):
+            return hit
+        return min(filter(own, self.bvh.find_nearest_range(co, reach)), key=lambda h: h[3], default=None)
 
     def uv_at(self, co, tri_index, layer_idx):
         corners, uvs, _ = self.tris[tri_index]
