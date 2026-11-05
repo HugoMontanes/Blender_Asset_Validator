@@ -54,7 +54,7 @@ Documento para retomar el trabajo desde cualquier chat o dispositivo. Al empezar
 |---|---|---|
 | 0 Cimientos | `feature/phase-0-foundations` | hecha, revisada, testeada (234 tests) y commiteada. Falta: que el usuario pruebe el último zip en su escena y verificar en motor. Arreglos de las pruebas con el Makarov en `bugfix/hard-surface-normals-and-lods` (252 tests) |
 | 1 UVs y texel density | `feature/phase-1-uvs` (desde `bugfix/hard-surface-normals-and-lods`, sin ticket) | hecha, revisada (`/ponytail-review`, `/code-review`), testeada (319 tests) y commiteada. Falta: probarla con interfaz en tu escena y revisar el panel (ver "Siguiente paso" en la fase 1) |
-| 2 Hard surface | `feature/phase-2-hard-surface` (desde `feature/phase-1-uvs`, sin ticket) | primera parte (Hard Surface Prep, Bevel, check de mid-poly) commiteada en `f82c897`. Segunda parte, el bake helper (rol `high`, Bake Normals, Export Bake Pairs), y `--jobs` en el CLI: testeados (368 tests; `check_scene` falla con la escena actual, ver notas) y commiteados el 2026-10-29 sin revisar, a petición del usuario. El 2026-11-03 se revisaron (10 hallazgos, 7 arreglados) y se arregló el solape de UVs con islas lejanas: 379 tests, revisado y commiteado el 2026-11-04 (`7c31cc2`). El mismo día: Auto Unwrap y Prep modales con Esc, y los tres bugs conocidos de Prep arreglados (385 tests), revisados y commiteados (`ffbf5d9`). Después, en `feature/showroom` (desde esa rama, sin ticket): pruebas con BlenderSuitTest_01, el arreglo del crash por mallas corruptas, los LODs sin caras duplicadas y el showroom (ver "Pruebas con BlenderSuitTest_01 y showroom"): 395 tests, revisado y commiteado en esa rama. En el repo solo va el script del showroom: el `.blend` y la normal map se regeneran. Lo siguiente está en "Siguiente paso" de la segunda parte. Quedan el crease para SubD y las trim sheets |
+| 2 Hard surface | `feature/phase-2-hard-surface` (desde `feature/phase-1-uvs`, sin ticket) | primera parte (Hard Surface Prep, Bevel, check de mid-poly) commiteada en `f82c897`. Segunda parte, el bake helper (rol `high`, Bake Normals, Export Bake Pairs), y `--jobs` en el CLI: testeados (368 tests; `check_scene` falla con la escena actual, ver notas) y commiteados el 2026-10-29 sin revisar, a petición del usuario. El 2026-11-03 se revisaron (10 hallazgos, 7 arreglados) y se arregló el solape de UVs con islas lejanas: 379 tests, revisado y commiteado el 2026-11-04 (`7c31cc2`). El mismo día: Auto Unwrap y Prep modales con Esc, y los tres bugs conocidos de Prep arreglados (385 tests), revisados y commiteados (`ffbf5d9`). Después, en `feature/showroom` (desde esa rama, sin ticket): pruebas con BlenderSuitTest_01, el arreglo del crash por mallas corruptas, los LODs sin caras duplicadas y el showroom (ver "Pruebas con BlenderSuitTest_01 y showroom"): 395 tests, revisado y commiteado en esa rama. En el repo solo va el script del showroom: el `.blend` y la normal map se regeneran. Lo siguiente está en "Siguiente paso" de la segunda parte. El 2026-11-05, en `feature/phase-2-subd-high` (desde `feature/showroom`, sin ticket): Make SubD High y el arreglo de Bake Normals con materiales con normal map (ver "Tercera parte"), testeados (435 tests; `check_scene` sale con SKIP porque en este equipo no está `Addon_Test.blend`) y revisados, sin commitear. Zip reconstruido e instalado en un perfil aislado. Quedan las trim sheets |
 | 3 Entornos, colisiones, texturas | — | pendiente |
 | 4 Topología y LOD avanzados | — | pendiente |
 | 5 Personajes y orgánico | — | pendiente |
@@ -392,6 +392,96 @@ Cada herramienta, con variaciones, sobre copias de cinco modelos de `C:\Users\hu
      - ~~Fix All en el escaneo deja 3 caras al revés donde había 1~~ (arreglado con el 4; queda comprobar el Floor del Makarov, que puede ser lo mismo).
 - **Showroom** (`demo/build_showroom.py`, ver README): genera `demo/Showroom.blend` por código, en unos 20 s. Tiene 17 estaciones de checks (incluida la nueva `mesh_data`) y 6 de herramientas, y se comprueba sola al final. Escribe junto al .blend un `asset_validator.json` que desactiva `check_location`. En el escaneo se ve que, en `-b`, `matrix_world` no sigue a `location` hasta un `view_layer.update()`; la cámara se apunta después de llamarlo.
 
+### Tercera parte: el `_high` con SubD, criterios (2026-11-05, rama `feature/phase-2-subd-high`, sin ticket)
+
+Alcance: un botón que crea el high de cada low con crease y Subdivision, listo para Bake Normals. Quedan para después las trim sheets. Cada criterio es un test en `tests/check_subd_high.py`.
+
+Medido antes en 5.2 (un cubo de 2 m horneado desde su copia con crease en las 12 aristas y Subdivision, `probe_crease*.py` en el scratchpad de la sesión):
+- Con crease 1.0 y las aristas sin marcar sharp, el sombreado suave cruza las aristas y el 64 % de los píxeles salen inclinados. Marcadas sharp, el mapa es plano. Con crease 1.0 hay que conservar las sharp.
+- Un crease de 0,6 a 0,95 da el mismo resultado (OpenSubdiv lo trata como afilado durante los primeros niveles y redondea en la superficie límite). Lo que fija el ancho del redondeo es el tamaño de las caras junto a la arista: en el cubo de una cara por lado se curva la cara entera (69 % de píxeles inclinados), con 3 cortes por arista queda en el borde (1,2 % a nivel 3, 14 % a nivel 2). Por debajo de 0,3 el cubo empieza a encoger.
+- El Bevel copia el crease a los dos bordes del chaflán (24 aristas con crease de 108).
+- `crease_edge` no existe en una malla nueva: hay que crearlo (FLOAT, EDGE).
+
+**Make SubD High** (`asset_validator.make_high`), sobre los assets seleccionados:
+- FR-1: crea `<base>_high` (`bake_base` y `bake.high_suffix`): una copia del objeto con su propia copia de la malla, con la misma transformación, padre y colecciones. Si ya existe un objeto con ese nombre, no lo toca y la línea lo dice.
+- FR-2: copia los modificadores del low menos Triangulate y Weighted Normal (son para el sombreado del low), y añade al final un Subdivision con *Levels* (2) en viewport y en render: el bake lee el render y `ray_distances` el viewport.
+- FR-3: el crease (*Crease*, 0,9) va en las aristas sharp del low y en las que tienen bevel weight (Prep con Bevel convierte las sharp en weight). Si no hay ninguna, en las que doblan más de `topology.feature_angle`, como Auto Unwrap. Todas las caras pasan a smooth. Con crease menor que 1 se quitan las sharp (el redondeo sería duro); con 1 se conservan.
+- FR-4: el high queda oculto y el low sigue seleccionado y activo, para hornear en el clic siguiente.
+- FR-5: una línea por low: las aristas con crease, los niveles, los triángulos del high, cuánto se aparta del low (el `_stray` de los LODs, en % de su tamaño) y, si las hay, cuántas caras no son quads (SubD las pellizca).
+- FR-6: el botón va en el paso "Shading & UVs", junto a Bake Normals, y en el modo normal.
+
+| AC | Requisito | Dado / cuando / entonces |
+|---|---|---|
+| 1 | FR-1, 4 | Un cubo `Box` con 12 sharp: tras Make SubD High existe `Box_high`, con rol `high`, `highs_of(Box)` es él, la misma matriz y las mismas colecciones, oculto, y `Box` sigue seleccionado y activo. `Crate_low` da `Crate_high` |
+| 2 | FR-3 | Las 12 aristas con crease 0,9, sin sharp y todas las caras smooth. Con crease 1, las 12 siguen sharp |
+| 3 | FR-2 | Un low con Bevel, Triangulate y Weighted Normal: el high tiene Bevel → Subdivision (nivel 2 en viewport y render), y el low conserva sus tres modificadores |
+| 4 | FR-3 | Un low tras Prep con Bevel (sin sharp, con bevel weight): el high pone crease en esas aristas. Un cubo sin marcas: en las 12 por ángulo |
+| 5 | FR-1 | Con un `Box_high` que ya existe, no se toca y la línea lo dice. Un LOD, una colisión o un high seleccionados se saltan |
+| 6 | FR-3 | Bake Normals desde el high de un cubo con 3 cortes: con crease 1 el mapa es plano; con 0,9 se inclinan los píxeles de los bordes |
+| 7 | FR-5 | La línea dice 12 aristas, nivel 2, los triángulos y la desviación; en un low triangulado, cuántas caras no son quads |
+| 8 | FR-6 | El operador se registra, se ejecuta desde `bpy.ops` y está en las herramientas del paso |
+
+Casos límite: un asset sin caras se salta. Sin nada que crear, se cancela con un error. Dos objetos que comparten malla con nombres distintos dan dos highs.
+
+Fuera de alcance: regenerar un high que ya existe (se borra a mano; con el redo del operador se ajustan Crease y Levels), editar el crease arista a arista (Shift+E de Blender), aplicar el Subdivision y añadir detalle esculpido.
+
+### Notas de la tercera parte, útiles para retomar
+
+Código: `make_high` en `operations/bake.py` (reutiliza `_sharp_edges` y `_bent_edges` de Prep, y `_shape`/`_stray` de los LODs), `ASSET_VALIDATOR_OT_make_high` en `operators/bake.py`, una fila propia en el panel (en los dos modos). Tests: `tests/check_subd_high.py`, 24 tests (28 tras la revisión), uno por AC, escritos antes del código, de uno en uno. Se comprobó con 10 mutaciones que cada arreglo tiene un test que falla sin él. Dos no fallaban a la primera, y se cambió el fixture: el crease desde bevel weight (en un cubo, el respaldo por ángulo marca las mismas 12 aristas; ahora el weight va en 3) y `render_levels` (un Subdivision nuevo ya renderiza a nivel 2; ahora se pide el 3).
+
+- **Arreglado de paso: Bake Normals horneaba el material del high.** Cycles hornea la normal del shader, no la de la geometría, así que un nodo Normal Map en el material del high acababa en el mapa. Lo destapó la prueba real: hornear `LP_stiffener.002` desde una copia exacta de sí mismo daba un mapa magenta (72 % de los píxeles, 48° de mediana), igual con o sin normales custom y con sombreado plano. Sus materiales llevan una Normal Map conectada, y Make SubD High los copia. Ahora `bake_normals` pone un material liso en `view_layer.material_override` durante el bake (los nodos de imagen del low siguen recibiendo el bake) y después devuelve el override que hubiera. Es lo que hacen Painter y Marmoset, que hornean solo la geometría. Test en `check_bake.py` (un high con una Normal Map inclinada hornea plano, y el override del artista vuelve); falla sin el arreglo y sin la restauración.
+- Prueba en `BlenderSuitTest_01.blend` (sin guardar), con Prep primero y textura de 1024:
+  - `LP_stiffener.002` (178 caras): Make SubD High en 0,05 s, bake en 4 s. Con crease 1, el 0,2 % de la textura sale inclinada; con 0,9, el 1,7 % (el redondeo de los bordes).
+  - `LP_stiffener.001` (7,7k caras): 1,4-1,6 s y 5 s de bake, 253k triángulos en el high. 178 caras no son quads, y la línea lo dice.
+  - Gipsy (16,6k caras, 924 piezas): 2,4-2,8 s y 7 s de bake, 475k triángulos. El mapa tiene parches de color incluso con crease 1: hay piezas que se atraviesan y el cage sale de 11 cm, así que los rayos cogen la pieza vecina. Es el mismo problema que el punto 3 de BlenderSuitTest_01 (el Audi a parches): un modelo de muchas piezas necesita hornear las piezas separadas (*explode*). No es de Make SubD High.
+- Con interfaz (capturas en la pestaña Item): el botón va en su propia fila, entre Auto Unwrap y Bake Normals, en el modo normal y en el paso 4, y desde la interfaz crea el high.
+- Menor, sin arreglar: un vértice suelto del high (sin caras) cuenta en `ray_distances` como "dentro" del low. En el stiffener, una copia exacta da un rayo de 2,8 cm en una pieza de 1,6 cm de grosor.
+- **Revisión** (`/ponytail-review` sin recortes; `/code-review` con 9 hallazgos, 5 arreglados, cada uno con un test que falla sin su arreglo):
+  - Con crease 1, las aristas que venían de bevel weight o del ángulo no se marcaban sharp, y el sombreado se doblaba sobre ellas (lo que se midió antes del código). Ahora, con crease 1, todas las aristas con crease son sharp.
+  - El modificador *Smooth by Angle* del low (Shade Auto Smooth, fijado al final) pasaba al high y volvía a marcar sharp los bordes redondeados después del Subdivision. Se quita, con la misma función que Prep (`auto_smooth_modifiers`).
+  - Un `Box_high` en otra escena impedía crear el de esta. Ahora solo cuenta la escena actual; el nuevo sale `Box_high.001`, que sigue siendo su high.
+  - Con un nombre de más de 63 bytes, Blender cortaba el sufijo y la copia quedaba como asset. Ahora no se crea, y la línea lo dice.
+  - Si no se crea ningún high, el operador da ERROR y cancela, sin dejar un paso de undo vacío.
+  - Descartados, con la razón:
+    - Que los punteros a los LODs del low se copien al high. Medido en el código: `lods_of` busca por el puntero del LOD a su origen, e `is_lod` lee los punteros del origen. Los del high no los lee nadie.
+    - El coste de medir la desviación. En el Gipsy, 1,05 s de 3,2 s a nivel 2, y 2,4 s de 4,7 s a nivel 3. Es lo que pide FR-5, y el resto de la operación ya cuesta el doble.
+    - Que el material liso del bake ignore el alpha de los highs. Es a propósito: Painter y Marmoset tampoco lo leen al hornear normales. Está en el README.
+    - Con un Bevel en la pila del low (Prep con Bevel), el Bevel copia el crease a los dos bordes del chaflán. Queda un chaflán con bordes redondeados, que es un acabado válido. Si se quiere el chaflán fundido en una curva, se baja *Crease* en el redo.
+    - Un Subdivision que ya tuviera el low se suma al nuevo. Un low de juego no lo lleva.
+
+### Pruebas con BlenderSuitTest_01, run 2 (2026-11-05, rama `feature/phase-2-subd-high`)
+
+Los mismos cinco modelos del run 1, más la pistola de Senna (`uv04_button20`, 67k caras, nueva en la escena), con dos pasos nuevos: Make SubD High sobre la copia de Prep seguido de su bake, y la desviación de cada LOD. También se validó la escena entera. La escena no se ha guardado. Informe con las láminas, comparado paso a paso con el run 1 (privado): https://claude.ai/artifact/KGSoJNDgUe3aGdMgrRkaNo. Los scripts (`process.py`, `render.py`, `validate_scene.py`, `make_sheets.py`, `make_report.py`, `findings.py` y las sondas `probe*.py`) están en el scratchpad de la sesión, no en el repo.
+
+- **Confirmado arreglado sobre los mismos modelos:**
+  - `LP_stiffener.001` ya no cierra Blender.
+  - Retopologize ya no deja caras degeneradas en el stiffener ni en el Gipsy.
+  - Los LODs del Gipsy ya no tienen caras al revés.
+  - *Straighten* en el Gipsy: de 86,6 s a 8,0 s.
+  - La desviación de los LODs avisa en el LOD2 y el LOD3 del Gipsy (1,2 % y 4,4 %) y en el LOD3 de `LP_stiffener.002` (11,1 %).
+  - Retopologize dice cuándo no llega al ratio.
+- **Validación de la escena entera:** 31 mallas y 3,2M de caras en 98 s. La medida anterior era de 105 s con 2,6M. Ningún objeto se dispara salvo el LOD1 de la copia de la Senna: 17 s, todos en `check_uvs`. El resto del tiempo se va en las 13 copias del Audi, de 6 a 12 s cada una.
+- **Abiertos, sin arreglar** (cada causa comprobada con una sonda en Blender):
+  1. **Clean Topology rompe las UV de las piezas finas.** En la Senna deja 904 caras con UV de más de media textura; el original no tiene ninguna.
+     - Por etapas: unir triángulos y disolver loops no lo causan; lo causa `_relax`.
+     - Al proyectar cada vértice libre, `_relax` toma el UV de `Surface.uv_at` en el punto más cercano. En una pieza fina, ese punto puede estar en la cara de enfrente, que es otra isla.
+     - Ningún vértice libre tenía UV partidas.
+  2. **Fix All vuelve a corromper la malla del escaneo.**
+     - `triangulate_warped` (28.978 quads) crea 3 caras duplicadas y 3 aristas más de 3+ caras, y la malla queda inválida (`mesh_data`).
+     - Antes de ese fix, la malla es válida.
+     - Arreglo probable: `validate()` tras el `to_mesh`, o no triangular un quad cuya diagonal ya es una arista.
+  3. **Una cara degenerada que su Fix no quita:** un quad doblado, con dos vértices distintos en el mismo punto (Retopologize de la Senna al 25 %).
+     - El check mide `polygon.area`, que es 0; `fix_degenerate_faces` mide con bmesh `calc_area`, que no lo ve por debajo del umbral.
+     - Tres pasadas seguidas no quitan nada, así que el ERROR bloquea el export. Los dos tienen que medir igual.
+  4. **`uv_overlap` es lento con triángulos UV grandes:** 69 s en la Senna tras Clean Topology (0,7 s en el original) y 17 s en `uv04_button20.001_LOD1` de la escena. Con el 1 arreglado desaparece el primer caso, pero no el del LOD.
+  5. **Menores:**
+     - Make SubD High a nivel 2 da 2,15M triángulos en la Senna y no avisa del tamaño.
+     - Fix All no aplica rotación ni escala, porque esos resultados no traen Fix. Afecta a la Senna, con escala 0,1 heredada del FBX.
+     - El bake del Audi sigue a parches (el punto 3 del run 1).
+- **Bake, medido en las normal maps** (parte del mapa inclinada más de 80°):
+  - En la Senna, retopo al 25 % + bake da un 8,9 %, porque el low sale deformado. Prep + Make SubD High + bake da un 1,75 %.
+  - Stiffener: 0,24 % con SubD. Gipsy: 4,5 %, por las piezas que se atraviesan.
+
 ### Siguiente paso (para retomar, 2026-11-03)
 
 1. ~~`/ponytail-review` y `/code-review` del bake helper y de `--jobs`.~~ Hecho el 2026-11-03 (ver arriba). Lo arreglado en esa revisión y el solape de UVs se revisaron el 2026-11-04 sin hallazgos nuevos (el reparto de `--jobs` con más jobs que ficheros, `check_bake_pairs` frente a `highs_of` con `low_suffix` vacío, la recursión de `_halves`), y se commitearon.
@@ -399,7 +489,8 @@ Cada herramienta, con variaciones, sobre copias de cinco modelos de `C:\Users\hu
 3. ~~Decidir qué hacer con Auto Unwrap/Prep en mallas enormes.~~ Decidido el 2026-11-04: modal con Esc (ver "Auto Unwrap y Prep modales"). `check_scene.py` sigue fallando NFR-1 con mallas enormes, porque el modal no las acelera. Queda decidir si `check_scene` debe probar las herramientas en la malla más grande o en una de tamaño "de juego".
 4. Que el usuario pruebe Bake Normals y Export Bake Pairs con interfaz (zip reconstruido el 2026-11-03), con un par high/low de verdad y UV0 sin solapes.
 5. ~~Problemas conocidos de Hard Surface Prep, citados en el mensaje del commit `f82c897`.~~ Comprobados y arreglados el 2026-11-04 (ver "Bugs conocidos de Prep").
-6. El resto de la fase 2: el crease para SubD (crear el `_high` desde el low) y las trim sheets.
+6. El resto de la fase 2: ~~el crease para SubD (crear el `_high` desde el low)~~ (hecho el 2026-11-05, ver "Tercera parte") y las trim sheets.
+7. Los abiertos del run 2 (ver "Pruebas con BlenderSuitTest_01, run 2"): primero el 1 (Clean Topology rompe UV) y el 2 (Fix All corrompe la malla), que estropean el asset sin avisar; después el 3 y el 4.
 
 ### Plan completo
 
@@ -410,7 +501,7 @@ Cada herramienta, con variaciones, sobre copias de cinco modelos de `C:\Users\hu
   4. Unwrap y pack (`uv.pack_islands` con `shape_method="CONCAVE"`).
   5. Texel density.
   6. Modificador Weighted Normal con Keep Sharp.
-- [ ] Support loops: [x] bevel en las aristas sharp con N segmentos para mid-poly (sin `harden_normals`: el Weighted Normal lo cubre); [ ] crease para SubD, que va con el bake helper.
+- [x] Support loops: [x] bevel en las aristas sharp con N segmentos para mid-poly (sin `harden_normals`: el Weighted Normal lo cubre); [x] crease para SubD (Make SubD High, tercera parte).
 - [x] Check de mid-poly: si el perfil lo pide, tiene que haber Weighted Normal.
 - [x] **Bake helper** (segunda parte, arriba):
   - Empareja `_high` y `_low` por nombre y mide el cage (`cage_extrusion`) y la distancia de rayo a partir de las mallas.
