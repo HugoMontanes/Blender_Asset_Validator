@@ -2,8 +2,9 @@ import bpy
 
 from . import ObjectModeOnly
 from ..core.engine import load_config
+from ..core.mesh_utils import repair_invalid
 from ..core.roles import bake_base, highs_of
-from ..operations.bake import bake_normals
+from ..operations.bake import bake_normals, make_high
 from ..ui.redraw import redraw_view3d
 from .uvs import asset_meshes
 
@@ -48,3 +49,33 @@ class ASSET_VALIDATOR_OT_bake_normals(ObjectModeOnly, bpy.types.Operator):
         redraw_view3d(context)
         self.report({"INFO"} if baked else {"ERROR"}, lines[0] if len(lines) == 1 else "; ".join(lines))
         return {"FINISHED"} if baked else {"CANCELLED"}
+
+
+class ASSET_VALIDATOR_OT_make_high(ObjectModeOnly, bpy.types.Operator):
+    bl_idname = "asset_validator.make_high"
+    bl_label = "Make SubD High"
+    bl_description = (
+        "Make each selected asset's _high to bake from: a hidden copy with the sharp edges creased and a "
+        "Subdivision modifier. The rounding follows the size of the faces next to each edge"
+    )
+    bl_options = {"REGISTER", "UNDO"}
+
+    crease: bpy.props.FloatProperty(
+        name="Crease", description="On the sharp edges: 1 keeps them hard, less rounds them", default=0.9, min=0.0, max=1.0,
+    )
+    levels: bpy.props.IntProperty(name="Levels", default=2, min=1, max=6)
+
+    def execute(self, context):
+        config = load_config()
+        lows = [obj for obj in asset_meshes(context.selected_objects, config) if obj.data.polygons]
+        if not lows:
+            self.report({"ERROR"}, "Select the low-poly asset meshes to make a high of")
+            return {"CANCELLED"}
+        repair_invalid(lows, self)
+        before = len(bpy.data.objects)
+        lines = [f"'{low.name}': {make_high(low, config, self.crease, self.levels)}" for low in lows]
+        print("\n".join(lines))
+        redraw_view3d(context)
+        made = len(bpy.data.objects) > before
+        self.report({"INFO"} if made else {"ERROR"}, "; ".join(lines))
+        return {"FINISHED"} if made else {"CANCELLED"}  # no undo step for nothing

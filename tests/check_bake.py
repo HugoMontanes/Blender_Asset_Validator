@@ -168,6 +168,21 @@ try:
     check("AC-4: flat on flat bakes (0.5, 0.5, 1) everywhere, hard edges too", deviation.max() < 0.02, f"{deviation.max():.3f} {msg}")
     check("AC-4: the render engine and samples are put back", scene.render.engine == engine_before and scene.cycles.samples == 77,
           f"{scene.render.engine} {scene.cycles.samples}")
+    # A high whose material bends its normals (a copy of a textured low) still bakes its geometry, as Painter does
+    mapped = cube("Mapped")
+    mapped_high = cube("Mapped_high", size=2.04, uv=False)
+    tree = mapped_high.data.materials[0]
+    tree.use_nodes = True
+    normal_map = tree.node_tree.nodes.new("ShaderNodeNormalMap")
+    normal_map.inputs["Color"].default_value = (0.9, 0.3, 0.7, 1.0)
+    tree.node_tree.links.new(normal_map.outputs["Normal"], tree.node_tree.nodes["Principled BSDF"].inputs["Normal"])
+    clay = scene.view_layers[0].material_override = bpy.data.materials.new("Clay")  # the artist's own, kept
+    bake.bake_normals(mapped, [mapped_high], config())
+    deviation = np.abs(pixels(bpy.data.images["Mapped_N"]) - [0.5, 0.5, 1.0]).max(axis=2)
+    check("a Normal Map in the high's material doesn't reach the bake", deviation.max() < 0.02, f"{deviation.max():.3f}")
+    check("the view layer's material override is put back, and the bake's own removed",
+          scene.view_layers[0].material_override == clay and "AV_bake_plain" not in bpy.data.materials)
+    scene.view_layers[0].material_override = None
 
     # AC-4, AC-5: a bevelled high tilts the edge pixels; DirectX green is 1 - OpenGL green
     bev = cube("Bev")

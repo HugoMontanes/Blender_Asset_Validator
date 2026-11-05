@@ -17,6 +17,7 @@ _STEP_TOOLS = {
     2: [[("asset_validator.clean_topology", "MOD_REMESH"), ("asset_validator.retopologize", "MESH_GRID")]],
     3: [[("asset_validator.hard_surface_prep", "MOD_BEVEL")],
         [("asset_validator.auto_unwrap", "UV"), ("asset_validator.set_texel_density", "TEXTURE")],
+        [("asset_validator.make_high", "MOD_SUBSURF")],
         [("asset_validator.bake_normals", "IMAGE_DATA"), ("asset_validator.export_bake_pairs", "EXPORT")]],
     4: [[("asset_validator.generate_lods", "DUPLICATE")]],
     5: [[("asset_validator.export", "EXPORT")]],
@@ -66,6 +67,7 @@ def _draw_all_at_once(layout):
     uv_row = layout.row(align=True)
     uv_row.operator("asset_validator.auto_unwrap", icon="UV")
     uv_row.operator("asset_validator.set_texel_density", icon="TEXTURE")
+    layout.operator("asset_validator.make_high", icon="MOD_SUBSURF")
     bake_row = layout.row(align=True)
     bake_row.operator("asset_validator.bake_normals", icon="IMAGE_DATA")
     bake_row.operator("asset_validator.export_bake_pairs", icon="EXPORT")

@@ -84,7 +84,7 @@ def add_modifiers(obj: bpy.types.Object, bevel_segments: int, budget: int = 0) -
     With a triangle `budget`, says when the Bevel takes the mesh over it."""
     added = []
     # Shade Auto Smooth's modifier, pinned last: the marked sharp edges replace it, and after a Bevel it re-sharpens the chamfer
-    auto_smooth = [m for m in obj.modifiers if m.type == "NODES" and m.node_group and m.node_group.name.startswith("Smooth by Angle")]
+    auto_smooth = auto_smooth_modifiers(obj)
     for modifier in auto_smooth:
         obj.modifiers.remove(modifier)
     if auto_smooth:
@@ -107,6 +107,11 @@ def add_modifiers(obj: bpy.types.Object, bevel_segments: int, budget: int = 0) -
     if note:
         added.append(note)
     return added
+
+
+def auto_smooth_modifiers(obj: bpy.types.Object) -> list:
+    """Shade Auto Smooth's geometry-nodes modifier (also what 4.1+ adds to files from before it)."""
+    return [m for m in obj.modifiers if m.type == "NODES" and m.node_group and m.node_group.name.startswith("Smooth by Angle")]
 
 
 def has_weighted_normal(obj: bpy.types.Object) -> bool:
