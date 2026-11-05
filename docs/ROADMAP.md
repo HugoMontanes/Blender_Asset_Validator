@@ -54,7 +54,7 @@ Documento para retomar el trabajo desde cualquier chat o dispositivo. Al empezar
 |---|---|---|
 | 0 Cimientos | `feature/phase-0-foundations` | hecha, revisada, testeada (234 tests) y commiteada. Falta: que el usuario pruebe el último zip en su escena y verificar en motor. Arreglos de las pruebas con el Makarov en `bugfix/hard-surface-normals-and-lods` (252 tests) |
 | 1 UVs y texel density | `feature/phase-1-uvs` (desde `bugfix/hard-surface-normals-and-lods`, sin ticket) | hecha, revisada (`/ponytail-review`, `/code-review`), testeada (319 tests) y commiteada. Falta: probarla con interfaz en tu escena y revisar el panel (ver "Siguiente paso" en la fase 1) |
-| 2 Hard surface | `feature/phase-2-hard-surface` (desde `feature/phase-1-uvs`, sin ticket) | primera parte (Hard Surface Prep, Bevel, check de mid-poly) commiteada en `f82c897`. Segunda parte, el bake helper (rol `high`, Bake Normals, Export Bake Pairs), y `--jobs` en el CLI: testeados (368 tests; `check_scene` falla con la escena actual, ver notas) y commiteados el 2026-10-29 sin revisar, a petición del usuario. El 2026-11-03 se revisaron (10 hallazgos, 7 arreglados) y se arregló el solape de UVs con islas lejanas: 379 tests, revisado y commiteado el 2026-11-04 (`7c31cc2`). El mismo día: Auto Unwrap y Prep modales con Esc, y los tres bugs conocidos de Prep arreglados (385 tests), revisados y commiteados (`ffbf5d9`). Después, en `feature/showroom` (desde esa rama, sin ticket): pruebas con BlenderSuitTest_01, el arreglo del crash por mallas corruptas, los LODs sin caras duplicadas y el showroom (ver "Pruebas con BlenderSuitTest_01 y showroom"): 395 tests, revisado y commiteado en esa rama. En el repo solo va el script del showroom: el `.blend` y la normal map se regeneran. Lo siguiente está en "Siguiente paso" de la segunda parte. El 2026-11-05, en `feature/phase-2-subd-high` (desde `feature/showroom`, sin ticket): Make SubD High y el arreglo de Bake Normals con materiales con normal map (ver "Tercera parte"), testeados (435 tests; `check_scene` sale con SKIP porque en este equipo no está `Addon_Test.blend`) y revisados, sin commitear. Zip reconstruido e instalado en un perfil aislado. Quedan las trim sheets |
+| 2 Hard surface | `feature/phase-2-hard-surface` (desde `feature/phase-1-uvs`, sin ticket) | primera parte (Hard Surface Prep, Bevel, check de mid-poly) commiteada en `f82c897`. Segunda parte, el bake helper (rol `high`, Bake Normals, Export Bake Pairs), y `--jobs` en el CLI: testeados (368 tests; `check_scene` falla con la escena actual, ver notas) y commiteados el 2026-10-29 sin revisar, a petición del usuario. El 2026-11-03 se revisaron (10 hallazgos, 7 arreglados) y se arregló el solape de UVs con islas lejanas: 379 tests, revisado y commiteado el 2026-11-04 (`7c31cc2`). El mismo día: Auto Unwrap y Prep modales con Esc, y los tres bugs conocidos de Prep arreglados (385 tests), revisados y commiteados (`ffbf5d9`). Después, en `feature/showroom` (desde esa rama, sin ticket): pruebas con BlenderSuitTest_01, el arreglo del crash por mallas corruptas, los LODs sin caras duplicadas y el showroom (ver "Pruebas con BlenderSuitTest_01 y showroom"): 395 tests, revisado y commiteado en esa rama. En el repo solo va el script del showroom: el `.blend` y la normal map se regeneran. Lo siguiente está en "Siguiente paso" de la segunda parte. El 2026-11-05, en `feature/phase-2-subd-high` (desde `feature/showroom`, sin ticket): Make SubD High y el arreglo de Bake Normals con materiales con normal map (ver "Tercera parte"), testeados (435 tests; `check_scene` sale con SKIP porque en este equipo no está `Addon_Test.blend`) y revisados. Zip reconstruido e instalado en un perfil aislado; commiteado el mismo día. Después, en `bugfix/run2-findings` (sin ticket), los arreglos 1-3 del run 2, comprobados con el run 3 (444 tests). Quedan las trim sheets |
 | 3 Entornos, colisiones, texturas | — | pendiente |
 | 4 Topología y LOD avanzados | — | pendiente |
 | 5 Personajes y orgánico | — | pendiente |
@@ -461,19 +461,26 @@ Los mismos cinco modelos del run 1, más la pistola de Senna (`uv04_button20`, 6
   - La desviación de los LODs avisa en el LOD2 y el LOD3 del Gipsy (1,2 % y 4,4 %) y en el LOD3 de `LP_stiffener.002` (11,1 %).
   - Retopologize dice cuándo no llega al ratio.
 - **Validación de la escena entera:** 31 mallas y 3,2M de caras en 98 s. La medida anterior era de 105 s con 2,6M. Ningún objeto se dispara salvo el LOD1 de la copia de la Senna: 17 s, todos en `check_uvs`. El resto del tiempo se va en las 13 copias del Audi, de 6 a 12 s cada una.
-- **Abiertos, sin arreglar** (cada causa comprobada con una sonda en Blender):
-  1. **Clean Topology rompe las UV de las piezas finas.** En la Senna deja 904 caras con UV de más de media textura; el original no tiene ninguna.
+- **Abiertos** (cada causa comprobada con una sonda en Blender). Del 1 al 3, arreglados el 2026-11-05 en `bugfix/run2-findings` (desde `feature/phase-2-subd-high`, sin ticket); el 4 queda como límite conocido:
+  1. ~~**Clean Topology rompe las UV de las piezas finas.**~~ Arreglado. En la Senna dejaba 904 caras con UV de más de media textura, y el original no tiene ninguna.
      - Por etapas: unir triángulos y disolver loops no lo causan; lo causa `_relax`.
-     - Al proyectar cada vértice libre, `_relax` toma el UV de `Surface.uv_at` en el punto más cercano. En una pieza fina, ese punto puede estar en la cara de enfrente, que es otra isla.
-     - Ningún vértice libre tenía UV partidas.
-  2. **Fix All vuelve a corromper la malla del escaneo.**
-     - `triangulate_warped` (28.978 quads) crea 3 caras duplicadas y 3 aristas más de 3+ caras, y la malla queda inválida (`mesh_data`).
-     - Antes de ese fix, la malla es válida.
-     - Arreglo probable: `validate()` tras el `to_mesh`, o no triangular un quad cuya diagonal ya es una arista.
-  3. **Una cara degenerada que su Fix no quita:** un quad doblado, con dos vértices distintos en el mismo punto (Retopologize de la Senna al 25 %).
-     - El check mide `polygon.area`, que es 0; `fix_degenerate_faces` mide con bmesh `calc_area`, que no lo ve por debajo del umbral.
-     - Tres pasadas seguidas no quitan nada, así que el ERROR bloquea el export. Los dos tienen que medir igual.
-  4. **`uv_overlap` es lento con triángulos UV grandes:** 69 s en la Senna tras Clean Topology (0,7 s en el original) y 17 s en `uv04_button20.001_LOD1` de la escena. Con el 1 arreglado desaparece el primer caso, pero no el del LOD.
+     - Medido en Blender: en el relajado, el punto al que va cada vértice queda dentro de la pieza, y el más cercano de la superficie original está en la cara de enfrente (272 vértices acababan en una cara que mira al lado contrario) o en otra pieza que mira igual (otros 84). La posición salta con la UV.
+     - Ahora `Surface.nearest_on` solo acepta un triángulo de la isla UV0 de la que sale el vértice, que mire como él (dentro de `topology.feature_angle`) y que quede encima o debajo del punto, no al lado. Si el más cercano no vale, busca uno que sí valga dentro de lo que se ha movido; si no lo hay, el vértice no se mueve. La UV sale del triángulo donde cae, y un vértice que no se mueve conserva la suya. Hacen falta los dos filtros: con una sola isla que da la vuelta al borde de una pieza fina (proyección plana), solo la orientación distingue las caras.
+     - Senna: de 904 caras a 0, y Clean Topology tarda lo mismo (18,5-22,2 s antes, 18,8-21,6 s después). LODs con `lod.clean_topology` de la Senna: el LOD1 pasa de 1.346 triángulos UV anchos a 75, y su `check_uvs` de 9,4 s a 0,5 s. Construir `Surface` cuesta más porque calcula las islas: de 5 a 8,7 s en el escaneo (564k caras), casi todo en `face_islands`. Lo paga también Retopologize, que no las usa; al lado de QuadriFlow es poco. Al limpiar un LOD, la superficie es su original: en el escaneo (LOD de `geo_dead`, 2,5M caras), Clean Topology pasa de 23 a 40 s. Marcado con `ponytail:` en `Surface`.
+     - El run 3 destapó que, sin el «encima o debajo», el filtro de isla creaba caras degeneradas: un vértice de una tira estrecha cuyo destino caía en la isla vecina se quedaba en el borde de la suya, sobre la costura, y el quad se aplanaba (4 en la Senna). Medido: esos desplazamientos van de lado (0,1-0,5 de coseno con la normal) y los buenos, a lo largo de ella (0,98-0,999).
+     - Tests en `check_topology.py`: una esfera de pared fina con la cara interior en otra isla, una pieza dentro de otra mirando igual, la pared fina con una sola isla y una tira UV estrecha entre dos costuras. Sin cada filtro, saltan 341, 341 y 161 vértices, y la tira acaba con una cara de área 0.
+  2. ~~**Fix All vuelve a corromper la malla del escaneo.**~~ Arreglado. `triangulate_warped` (28.978 quads) creaba 3 caras duplicadas, y la malla quedaba inválida (`mesh_data`).
+     - Medido: 2 eran un triángulo nuevo igual a uno que ya había (el quad se solapaba con él en tres esquinas), y 1 salía de dos quads alabeados con tres vértices comunes, que daban el mismo triángulo. Cambiar de diagonal no arregla el segundo caso.
+     - Ahora quita cada triángulo nuevo que repite una cara y deja una de cada; la línea lo dice. El escaneo queda válido (1,7 s). Las aristas con 3+ caras pasan de 2 a 5, por el solape que ya traía la malla; el check de manifold las avisa.
+     - Tests en `check_steps.py` para los dos casos. Si se quitan todas las copias, también la última, queda un agujero, y el test lo comprueba.
+  3. ~~**Una cara degenerada que su Fix no quita.**~~ Arreglado. Era un quad doblado, con el 2.º y el 4.º vértice en el mismo punto (Retopologize de la Senna al 25 %).
+     - Medido: `polygon.area` da exactamente 0 y bmesh `calc_area` 1,8e-9, por encima del umbral de 1e-10 (el redondeo de cada suma). El Fix no lo elegía.
+     - Ahora el Fix elige también las caras que da el check, con su misma medida, y fusiona sus vértices. Al cerrarse el quad, sus bordes sin vecino quedaban como una arista suelta; el Fix la borra, como ya hacía al borrar una cara.
+     - Test en `check_regressions.py` con las coordenadas reales, porque el redondeo es el suyo. Comprobado sobre `Senna_retopo_25`: se va a la primera.
+  4. **`uv_overlap` es lento con triángulos UV grandes:** 12 s en `uv04_button20.001_LOD1`, con 1.630 de sus 66k triángulos de más de un cuarto de textura (su original no tiene ninguno); con UV sanas, menos de 1 s.
+     - Solo pasa con UV rotas, que el check ya marca. Ese LOD lo hizo una versión anterior del addon: regenerado con la actual (decimado, el modo por defecto), tiene 11 triángulos anchos y su `check_uvs` tarda 0,4 s.
+     - No se optimiza. Si hiciera falta: probar aparte los triángulos que cubren muchas celdas de la rejilla.
+     - Visto de paso, sin arreglar: el decimado deja algunos triángulos UV anchos, porque el colapso cruza costuras pese al grupo de protección. En la Senna: 11, 19 y 72 en los LOD1-3; con Clean Topology, 75, 98 y 115.
   5. **Menores:**
      - Make SubD High a nivel 2 da 2,15M triángulos en la Senna y no avisa del tamaño.
      - Fix All no aplica rotación ni escala, porque esos resultados no traen Fix. Afecta a la Senna, con escala 0,1 heredada del FBX.
@@ -481,6 +488,20 @@ Los mismos cinco modelos del run 1, más la pistola de Senna (`uv04_button20`, 6
 - **Bake, medido en las normal maps** (parte del mapa inclinada más de 80°):
   - En la Senna, retopo al 25 % + bake da un 8,9 %, porque el low sale deformado. Prep + Make SubD High + bake da un 1,75 %.
   - Stiffener: 0,24 % con SubD. Gipsy: 4,5 %, por las piezas que se atraviesan.
+
+### Pruebas con BlenderSuitTest_01, run 3 (2026-11-05, rama `bugfix/run2-findings`)
+
+El run 2 repetido con sus arreglos: los mismos seis modelos, pasos y cámaras, y la escena entera. La escena no se ha guardado. Informe comparado paso a paso con el run 2 (privado): https://claude.ai/artifact/CGPQMoCmP9CTNkZfuUYr5o. Lo ejecutó un agente Sonnet; los scripts están en el scratchpad de la sesión, en `run3/`.
+
+- **Confirmado:**
+  - Senna, Clean Topology: ningún triángulo UV roto, y la validación de la variante baja de 54 s a 3,3 s.
+  - Gipsy, Clean Topology: las islas estiradas bajan de 140 a 125, y las que se salían del texel density, de 15 a 0.
+  - El escaneo tras Fix All ya no sale `mesh_data` y se valida entero por primera vez. Salen sus problemas reales: rotación sin aplicar, 625k triángulos, una textura que falta, 5 aristas con 3+ caras.
+  - El ERROR `geometry_cleanup` desaparece de las retopos y los bakes de la Senna y del Audi.
+  - En Fix All del Audi desaparece el aviso de vértices y aristas sueltas.
+- **Destapado y arreglado en el mismo run:** la primera versión del arreglo 1 dejaba 4 caras degeneradas en Clean Topology de la Senna (ver el punto 1 del run 2). Con el arreglo, la Senna se repitió: 0.
+- **Escena entera:** 31 mallas y 3,2M de caras en 97-108 s, igual que en el run 2; ningún objeto cambia de resultado. `uv04_button20.001_LOD1` sigue tardando lo mismo: es tu LOD hecho con una versión anterior del addon, y se arregla regenerándolo.
+- **Abierto:** Clean Topology sobre el escaneo, de 30 a 53 s en el run (de 23 a 40 s medido aislado): es el coste de las islas del original de 2,5M caras.
 
 ### Siguiente paso (para retomar, 2026-11-03)
 
@@ -490,7 +511,7 @@ Los mismos cinco modelos del run 1, más la pistola de Senna (`uv04_button20`, 6
 4. Que el usuario pruebe Bake Normals y Export Bake Pairs con interfaz (zip reconstruido el 2026-11-03), con un par high/low de verdad y UV0 sin solapes.
 5. ~~Problemas conocidos de Hard Surface Prep, citados en el mensaje del commit `f82c897`.~~ Comprobados y arreglados el 2026-11-04 (ver "Bugs conocidos de Prep").
 6. El resto de la fase 2: ~~el crease para SubD (crear el `_high` desde el low)~~ (hecho el 2026-11-05, ver "Tercera parte") y las trim sheets.
-7. Los abiertos del run 2 (ver "Pruebas con BlenderSuitTest_01, run 2"): primero el 1 (Clean Topology rompe UV) y el 2 (Fix All corrompe la malla), que estropean el asset sin avisar; después el 3 y el 4.
+7. Los abiertos del run 2 (ver "Pruebas con BlenderSuitTest_01, run 2"): ~~el 1, el 2 y el 3~~ arreglados el 2026-11-05; el 4 queda como límite conocido. Quedan los menores: avisar del tamaño del high de Make SubD High (falta decidir el umbral) y decidir si Fix All debe aplicar rotación y escala. También los triángulos UV anchos que deja el decimado de los LODs.
 
 ### Plan completo
 
