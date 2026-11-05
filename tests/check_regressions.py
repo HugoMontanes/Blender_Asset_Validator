@@ -148,6 +148,20 @@ try:
           len(shells.data.polygons) == faces0 - 1 and used == 16 and not fins and not wrong,
           f"{msg}; {faces0} -> {len(shells.data.polygons)} faces, {used} verts in faces, {fins} fins, {wrong} wrong")
 
+    # a quad folded onto itself (2nd and 4th corners at one point, from a gun's retopo): polygon.area reads 0,
+    # bmesh 1.8e-9, so the fix never picked what the check reported. The real coordinates: the rounding is theirs
+    from blender_asset_validator.checks import geometry as geo_check
+    a, b, c = (0.28567928075790405, -0.8960551023483276, 1.0266942977905273), (0.2856783866882324, -0.8969452977180481, 1.0269838571548462), (0.24527473747730255, -0.9300089478492737, 1.0488088130950928)
+    me = bpy.data.meshes.new("Folded"); me.from_pydata([a, b, c, b, (0.25, -0.89, 1.0)], [], [(0, 1, 2, 3), (1, 4, 2)])
+    folded = bpy.data.objects.new("Folded", me); bpy.context.scene.collection.objects.link(folded)
+    flagged = bool(geo_check.check_degenerate_faces([folded], CFG))
+    msg = cleanup.fix_degenerate_faces(folded, CFG)
+    in_faces = {k for p in folded.data.polygons for k in p.edge_keys}
+    loose = sum(1 for e in folded.data.edges if e.key not in in_faces) + len(folded.data.vertices) - len({v for p in folded.data.polygons for v in p.vertices})
+    check("degenerate fix: removes the folded quad the check reports, nothing left loose",
+          flagged and msg and not geo_check.check_degenerate_faces([folded], CFG) and not loose,
+          f"flagged {flagged}, {msg}, {len(folded.data.polygons)} faces, {loose} loose edges/verts")
+
     # one NaN UV (broken import) must not put every triangle in one overlap-grid cell and hang Validate
     from blender_asset_validator.checks import uvs
     import time

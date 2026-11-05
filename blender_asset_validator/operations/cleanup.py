@@ -21,15 +21,22 @@ def fix_degenerate_faces(obj: bpy.types.Object, config: dict) -> Optional[str]:
 
     bm = bmesh.new()
     bm.from_mesh(mesh)
+    bm.faces.ensure_lookup_table()
+    # The check's own measure as well: a quad folded onto itself reads 0 in polygon.area but 1.8e-9 in bmesh
+    reported = {bm.faces[p.index] for p in mesh.polygons if p.area <= area_epsilon}
 
     def degenerate():
-        return [face for face in bm.faces if face.calc_area() <= area_epsilon]
+        return [face for face in bm.faces if face in reported or face.calc_area() <= area_epsilon]
 
     if cfg.get("merge_by_distance", True):
-        for verts in [list(face.verts) for face in degenerate()]:  # each face with itself, not with its neighbours
+        faces = degenerate()
+        edges = {edge for face in faces for edge in face.edges}
+        for verts in [list(face.verts) for face in faces]:  # each face with itself, not with its neighbours
             alive = [v for v in verts if v.is_valid]  # an earlier merge may have taken some
             if len(alive) > 1:
                 bmesh.ops.remove_doubles(bm, verts=alive, dist=cfg.get("merge_distance", 0.0001))
+        # A face the merge collapsed leaves its unshared edges loose, as deleting it would not
+        bmesh.ops.delete(bm, geom=[e for e in edges if e.is_valid and not e.link_faces], context="EDGES")
 
     if cfg.get("fix_degenerate_faces", True):
         edges = list({edge for face in degenerate() for edge in face.edges})
@@ -191,8 +198,18 @@ def triangulate_warped(obj: bpy.types.Object, max_warp: float) -> Optional[str]:
     bm.from_mesh(mesh)
     bm.faces.ensure_lookup_table()
     faces = [bm.faces[i] for i in indices]
-    bmesh.ops.triangulate(bm, faces=faces, quad_method="BEAUTY")
+    tris = bmesh.ops.triangulate(bm, faces=faces, quad_method="BEAUTY")["faces"]
+    # A quad lying over a triangle on three corners (or over another quad) splits into a copy of it,
+    # and a duplicate face makes the mesh invalid: keep one of each
+    copies = []
+    for tri in tris:
+        verts = set(tri.verts)
+        if any(f is not tri and f not in copies and set(f.verts) == verts for f in tri.verts[0].link_faces):
+            copies.append(tri)
+    bmesh.ops.delete(bm, geom=copies, context="FACES_ONLY")
     bm.to_mesh(mesh)
     bm.free()
     mesh.update()
-    return f"triangulated {len(faces)} warped quad(s)" if faces else None
+    if not faces:
+        return None
+    return f"triangulated {len(faces)} warped quad(s)" + (f", dropped {len(copies)} that copied a face already there" if copies else "")

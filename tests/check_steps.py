@@ -108,6 +108,20 @@ try:
     check("planarity: fix finds the warped quad again after renumbering",
           len(wq2.data.polygons) == 4 and not [x for x in run({"topology"}, wq2) if "warped" in x.message],
           f"{len(wq2.data.polygons)} faces")
+    # a scan's warped quads overlap a triangle on three corners, or another quad: their split made a copy of it
+    def overlapped(bm):
+        a, b, c, d = (bm.verts.new(p) for p in [(0, 0, 0), (1, 0, 0), (1, 1, 0), (0, 1, 0.8)])
+        bm.faces.new((a, b, c, d)); bm.faces.new((a, c, d)); bm.faces.new((b, c, d))  # one copy on either diagonal
+    def two_quads(bm):
+        a, b, c, d, e = (bm.verts.new(p) for p in [(0, 0, 0), (0.2, -1, 0), (0.4, 0, 0), (0.2, 1, 0.5), (0.2, 1, -0.5)])
+        bm.faces.new((a, b, c, d)); bm.faces.new((a, b, c, e))  # both split on the short diagonal: two copies of abc
+    for name, fill, faces in (("WarpedOverlap", overlapped, 3), ("WarpedPair", two_quads, 3)):
+        o = mk(name, fill)
+        for x in run({"topology"}, o):
+            if "warped" in x.message: say(f"   {name}: {x.fix()}")
+        dup = len(o.data.polygons) - len({frozenset(p.vertices) for p in o.data.polygons})
+        check(f"planarity: fix on {name} leaves no duplicate face, nor a hole",
+              not dup and len(o.data.polygons) == faces and not engine._invalid_mesh(o.data), f"{len(o.data.polygons)} faces, {dup} duplicate")
 
     # ---------- shading ----------
     def sharp_cube(bm):
