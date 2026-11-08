@@ -8,7 +8,7 @@ from ..core.roles import role
 from ..operations.lod import lods_of
 
 
-@register_check(roles=("asset", "lod", "collision"))  # a collision must sit where its mesh does
+@register_check(roles=("asset", "lod", "collision"), whole_set=True)  # a collision must sit where its mesh does; parents in the set
 def check_transforms(objects: List[bpy.types.Object], config: dict) -> List[CheckResult]:
     results = []
     cfg = config.get("transforms", {})

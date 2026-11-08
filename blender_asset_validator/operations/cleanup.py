@@ -31,10 +31,25 @@ def fix_degenerate_faces(obj: bpy.types.Object, config: dict) -> Optional[str]:
     if cfg.get("merge_by_distance", True):
         faces = degenerate()
         edges = {edge for face in faces for edge in face.edges}
-        for verts in [list(face.verts) for face in faces]:  # each face with itself, not with its neighbours
-            alive = [v for v in verts if v.is_valid]  # an earlier merge may have taken some
-            if len(alive) > 1:
-                bmesh.ops.remove_doubles(bm, verts=alive, dist=cfg.get("merge_distance", 0.0001))
+        dist = cfg.get("merge_distance", 0.0001)
+        target = {}  # each face's vertices with each other, never with its neighbours'; one weld for them all,
+        # as a remove_doubles per face walked the whole mesh each time (a scan's 12k faces never finished)
+
+        def root(v):
+            while v in target:
+                v = target[v]
+            return v
+        for face in faces:
+            verts = list(face.verts)
+            for i, v in enumerate(verts):
+                rv = root(v)
+                for u in verts[:i]:
+                    ru = root(u)
+                    if ru is not rv and (rv.co - ru.co).length <= dist:
+                        target[rv] = ru
+                        break
+        if target:
+            bmesh.ops.weld_verts(bm, targetmap={v: root(v) for v in target})
         # A face the merge collapsed leaves its unshared edges loose, as deleting it would not
         bmesh.ops.delete(bm, geom=[e for e in edges if e.is_valid and not e.link_faces], context="EDGES")
 

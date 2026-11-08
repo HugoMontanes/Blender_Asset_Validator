@@ -162,6 +162,39 @@ try:
           flagged and msg and not geo_check.check_degenerate_faces([folded], CFG) and not loose,
           f"flagged {flagged}, {msg}, {len(folded.data.polygons)} faces, {loose} loose edges/verts")
 
+    # check_shading made (and removed) a mesh per object, and each made the next evaluation rebuild the
+    # whole scene graph: 31 s on a 940-part robot of 60k triangles, 117 s on the stress scene
+    import time
+    from blender_asset_validator.checks import shading as shading_check
+    timings = []
+    for n in (100, 400):
+        many = []
+        for i in range(n):
+            bm = bmesh.new(); bmesh.ops.create_cube(bm, size=0.2)
+            many.append(mk(f"ShadePart{n}_{i}", bm))
+        t = time.perf_counter()
+        for o in many:  # one object per call, as Validate runs it
+            shading_check.check_shading([o], CFG)
+        timings.append(time.perf_counter() - t)
+    check("check_shading scales with the objects, not their square", timings[1] < 8 * timings[0],
+          f"100 objects {timings[0]:.2f}s, 400 objects {timings[1]:.2f}s ({timings[1] / max(timings[0], 1e-9):.1f}x)")
+
+    # a raw scan's thousands of degenerate faces: one weld per face walked the whole mesh each time
+    # (stress test: the Stanford dragon's 12k never finished Fix All)
+    import time
+    bm = bmesh.new()
+    bmesh.ops.create_grid(bm, x_segments=300, y_segments=300, size=1.0)
+    bm.faces.ensure_lookup_table()
+    for f in list(bm.faces)[::30]:
+        centre = f.calc_center_median()
+        for v in f.verts:
+            v.co = centre
+    scan = mk("ScanDegenerate", bm)
+    flagged = geo_check.check_degenerate_faces([scan], CFG)
+    t = time.perf_counter(); msg = cleanup.fix_degenerate_faces(scan, CFG); elapsed = time.perf_counter() - t
+    check("degenerate fix on 3,000 faces of a 90k-vertex mesh: all gone, in seconds",
+          flagged and not geo_check.check_degenerate_faces([scan], CFG) and elapsed < 3.0, f"{msg}, {elapsed:.1f}s")
+
     # one NaN UV (broken import) must not put every triangle in one overlap-grid cell and hang Validate
     from blender_asset_validator.checks import uvs
     import time
@@ -198,6 +231,48 @@ try:
             wrong.append(k)
     uv_ops._CROWDED, uv_ops._CROWDED_ROUNDS = limits
     check("UV overlap halving gives the every-pair answer on 27 triangle soups", not wrong, f"wrong at k={wrong}")
+
+    def every_pair(soup):
+        axes, lo_, hi_ = uv_ops._sat_axes(soup)
+        a, b = np.triu_indices(len(soup), 1)
+        return not (uv_ops._separated(axes[a], lo_[a], hi_[a], soup[b]) | uv_ops._separated(axes[b], lo_[b], hi_[b], soup[a])).all()
+
+    # foliage cards / mirrored halves stack whole-texture triangles: each one sat in every grid cell, T^2 entries
+    # (stress test: 20k grass-card triangles never finished Validate)
+    card = np.array([[[0, 0], [1, 0], [1, 1]], [[0, 0], [1, 1], [0, 1]]], float)
+    stacked = np.tile(card, (4000, 1, 1))
+    t = time.perf_counter(); r = uv_ops._any_triangles_overlap(stacked); elapsed = time.perf_counter() - t
+    check("UV overlap with 8,000 stacked card triangles: found, in under a second", r and elapsed < 1.0, f"{r} {elapsed:.2f}s")
+
+    # a few big triangles among small ones (a broken LOD's wide UV triangles): each covered thousands of cells
+    rng, wrong = np.random.default_rng(5), []
+    for k in range(4, 24):
+        soup = (np.stack(np.meshgrid(np.arange(k), np.arange(k), indexing="ij"), -1).reshape(-1, 1, 2) + rng.uniform(0.05, 0.95, (k * k, 3, 2))) / k
+        big = rng.uniform(0, 1, (k % 4, 1, 2)) + rng.uniform(-0.4, 0.4, (k % 4, 3, 2))
+        soup = np.concatenate([soup, big])
+        if uv_ops._any_triangles_overlap(soup) != every_pair(soup):
+            wrong.append(k)
+    slivers = np.array([[[0, 0], [1, 0], [1, 1e-4]]]) + np.stack([np.zeros(16), np.arange(16) / 16 * 0.45], -1)[:, None]  # below y = 0.5
+    apart = np.concatenate([(np.stack(np.meshgrid(np.arange(8), np.arange(8), indexing="ij"), -1).reshape(-1, 1, 2)
+                             + [[0.1, 0.1], [0.9, 0.1], [0.5, 0.9]]) / 8 * 0.5 + [0, 0.5], slivers])  # small ones above the slivers
+    if uv_ops._any_triangles_overlap(apart) or every_pair(apart):
+        wrong.append("apart")
+    check("UV overlap with big and small triangles gives the every-pair answer", not wrong, f"wrong at {wrong}")
+    n = 245  # 60k small triangles in the top half, 1,500 slivers across the bottom half: none overlap
+    small = (np.stack(np.meshgrid(np.arange(n), np.arange(n), indexing="ij"), -1).reshape(-1, 1, 2) + [[0.1, 0.1], [0.9, 0.1], [0.5, 0.9]]) / n * [1, 0.5] + [0, 0.5]
+    wide = np.array([[[0, 0], [1, 0], [1, 1e-5]]]) + np.stack([np.zeros(1500), np.arange(1500) / 3000], -1)[:, None]
+    t = time.perf_counter(); r = uv_ops._any_triangles_overlap(np.concatenate([small, wide])); elapsed = time.perf_counter() - t
+    check("UV overlap with 1,500 texture-wide slivers among 60k small triangles: none, in seconds", not r and elapsed < 3.0, f"{r} {elapsed:.2f}s")
+    # Big in both directions: a tree's lightmap UV asked for 23 GiB of grid cells (3.1e9), 2,000 diagonals here
+    small = (np.stack(np.meshgrid(np.arange(n), np.arange(n), indexing="ij"), -1).reshape(-1, 1, 2) + [[0.1, 0.1], [0.9, 0.1], [0.5, 0.9]]) / n
+    shift = np.linspace(0, 0.2, 2000)[:, None, None] * [1, 0]
+    diagonals = np.array([[[0, 0], [0.8, 1], [0.8005, 1]]]) + shift
+    t = time.perf_counter(); r = uv_ops._any_triangles_overlap(np.concatenate([small, diagonals])); elapsed = time.perf_counter() - t
+    check("UV overlap with 2,000 texture-wide diagonals over 60k small triangles: found, in seconds", r and elapsed < 3.0, f"{r} {elapsed:.2f}s")
+    # A thin strip (a trim sheet): cells sized per axis put every triangle in all the rows, all of them "big"
+    strip = (np.arange(20000)[:, None, None] * [1, 0] + [[0.1, 0.1], [0.9, 0.1], [0.5, 0.9]]) * [1 / 20000, 0.01]
+    t = time.perf_counter(); r = uv_ops._any_triangles_overlap(strip); elapsed = time.perf_counter() - t
+    check("UV overlap on a 20k-triangle strip 0.01 tall: none, in seconds", not r and elapsed < 3.0, f"{r} {elapsed:.2f}s")  # 8.5 s before
 
     # flat_angle from config drives LOD planar dissolve too
     bm = bmesh.new(); bmesh.ops.create_uvsphere(bm, u_segments=16, v_segments=8, radius=1.0)

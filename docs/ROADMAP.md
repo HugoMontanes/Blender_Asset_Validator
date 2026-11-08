@@ -503,6 +503,54 @@ El run 2 repetido con sus arreglos: los mismos seis modelos, pasos y cámaras, y
 - **Escena entera:** 31 mallas y 3,2M de caras en 97-108 s, igual que en el run 2; ningún objeto cambia de resultado. `uv04_button20.001_LOD1` sigue tardando lo mismo: es tu LOD hecho con una versión anterior del addon, y se arregla regenerándolo.
 - **Abierto:** Clean Topology sobre el escaneo, de 30 a 53 s en el run (de 23 a 40 s medido aislado): es el coste de las islas del original de 2,5M caras.
 
+### Stress test (2026-11-07, rama `bugfix/run2-findings`, sin ticket)
+
+`tests/stress/build_stress_scene.py` genera `StressTest.blend` (51 s, 481 MB, sin commitear): 63 casos sintéticos pensados para romper el addon (de 80 a 5,2M triángulos, modificadores sin aplicar, foliage, UDIM, nombres raros, NaN, pares de bake, colisiones) y 15 modelos reales importados. Los nuevos son de Poly Haven (CC0) y el dragón de Stanford, descargados en `test_assets/polyhaven_*` y `test_assets/stanford_dragon`. Cada caso dice qué debería saltar (`expect`), qué no (`forbid`), qué es intencionado (`artist_ok`) y qué falta (`gap`). `tests/stress/run_stress.py` pasa cada caso por todas las herramientas, en un Blender por caso con límite de tiempo y `faulthandler`, y deja JSON, log y `.blend` de trabajo en `tests/stress/_out/`. `run.ps1` no lo ejecuta (1 h 44 min con 3 en paralelo). Informe (privado): https://claude.ai/artifact/MwxgHs1fywCsHx5yCwnNdw.
+
+- **Cuelgues** (cada uno localizado con la pila):
+  1. `uv_overlap` con UVs apiladas (hierba, hojas): cada triángulo cubre toda la rejilla, T² entradas. Cuelga Validate en `PH_Tree`, `GrassCards` y la escena entera. Es la raíz del abierto 4 del run 2.
+  2. `fix_degenerate_faces`: un `remove_doubles` por cara, O(caras × vértices). El dragón (12k caras degeneradas) no termina Fix All.
+  3. Make SubD High con un ngon de 1.000 lados. El Subdivision de Blender es superlineal: 400 lados, 24 s.
+  4. Generate LODs es O(n²) en assets de muchas piezas: `bake_mesh` cuesta en proporción a los objetos de la escena (0,2 ms con 7, 61 ms con 2.000). Gipsy y Police pasan de 25 min.
+- **Herramientas que rompen:** Clean Topology crea caras degeneradas en `PH_Barrel`. Retopologize deja caras al revés en el barco. Fix All borra la cara trasera de una hoja de doble cara. El Fix de polycount se queda en 52.428 con un presupuesto de 50.000. Los LODs cuadruplican los errores al exportar, se generan de mallas vacías y pierden las shape keys sin avisar.
+- **Ruido:** nombres de importación sin Fix (939 errores en el Gipsy), texel density que avisa en el 100 % de los assets reales, UVs apiladas a propósito, rotación de importación sin Fix y polos de 6 en las esquinas de la salida del propio Prep.
+- **Huecos:** los checks leen `obj.data` y el export escribe la malla evaluada (Mirror, Boolean, Solidify, Array y Displace pasan sin aviso, y el cortador del Boolean se exporta como asset). Además: tamaño absurdo, slots sin caras, UCX cóncavo, socket sin padre y LODs hechos a mano.
+- Propuestas en orden: cuelgues → herramientas → ruido → huecos (detalle en el informe).
+
+### Cuelgues del stress test arreglados (2026-11-08, rama `bugfix/stress-hangs` desde `bugfix/run2-findings`, sin ticket)
+
+Cada arreglo tiene un test que falla sin él (comprobado) y se repitió el caso real del stress. 456 tests. `check_scene` sigue con los mismos 5 fallos de antes (comprobado en un worktree con el código anterior), y su validación completa pasa de 308 s a 292 s.
+
+- **Solape de UVs** (`_any_triangles_overlap`):
+  - La rejilla se dimensiona por el triángulo típico (mediana), no por √T. 8.000 tarjetas apiladas: de 46 s a 0,01 s.
+  - Los triángulos que cubren más de 64 celdas salen de la rejilla y se prueban contra lo que toca su caja, por lotes (`_big_overlap`). 2.000 diagonales sobre 60k triángulos: de 65,6 s a 0,73 s. El lightmap del árbol pedía 23 GiB.
+  - A cambio, 1.500 tiras finas sin solape tardan 2,2 s (antes 0,27 s).
+- **`fix_degenerate_faces`**: un solo `weld_verts`, con cada cara fusionada consigo misma como antes. 3.000 caras en 90k vértices: de 123 s a 0,2 s. Dragón: Fix All en 66 s.
+- **Make SubD High**: no crea el high si el low tiene caras de más de 64 lados (`_MAX_SUBD_SIDES`), y la línea lo dice. El Subdivision de Blender tarda 1,9 s con 200 lados y 24 s con 400. Atajo: lee las caras del low, no las que creen sus modificadores.
+- **Generate LODs** con muchas piezas:
+  - El decimado se hace en una escena temporal (`_AssetValidator_LOD`, se borra al acabar).
+  - Las normales custom se quitan como atributo; el operador, que cuesta por objeto del fichero, solo queda para 4.2 (atajo marcado).
+  - Todas las fuentes se evalúan con un solo depsgraph antes de crear nada, y los LODs se enlazan al final.
+  - Causa medida: cada ID nuevo o borrado hace que el siguiente `evaluated_depsgraph_get()` reconstruya el grafo de toda la escena.
+  - 200 piezas: de 59,7 s a 3,1 s; 400: de 240 s a 6,4 s. Gipsy: de más de 25 min a 391 s. Police: 179 s.
+- **`check_shading`**: `to_mesh()` en vez de un datablock por objeto, por la misma causa. 400 objetos: de 4,33 s a 0,07 s.
+- **Validate modal**: barra de estado y Esc (conserva los resultados anteriores).
+  - `validation_steps` es un generador que corre cada check objeto a objeto y da una línea cada 0,1 s; `run_validation` lo recorre entero.
+  - `check_transforms` se registra con `whole_set=True` porque compara padres e hijos.
+  - La escena entera del stress (14,9M tris, 1.471 mallas) ya termina: unos 8 min de checks, `check_uv_layout` 200 s. Antes no acababa en 25 min.
+- **Revisión (`/ponytail-review` + `/code-review`), arreglado:**
+  - Celdas cuadradas en la rejilla de UVs: en una tira fina (trim sheet) todos los triángulos caían en todas las filas. 60k triángulos: de 75 s a 3,5 s.
+  - `_big_overlap` hace lotes según el tamaño de la malla (con 5M triángulos eran 1,3 GB por lote).
+  - LODs: la escena temporal usa el frame del artista, y tras un error se borran las bases que no se usaron.
+  - Validate: si el generador falla, sale el error real, no un `AttributeError`.
+- **Revisión, no arreglado (anotado):**
+  - Un error en LODs deja sin LODs a las fuentes siguientes (atajo marcado).
+  - La pasada de mallas inválidas corre antes del primer yield: no hay progreso ni Esc durante ella.
+  - Un check que falla por config da un error por objeto.
+  - `transfer_normals` evalúa la fuente una vez por nivel.
+  - `lods_of` recorre todo `bpy.data.objects` por fuente.
+- **Queda abierto:** Retopologize sobre 940 objetos sueltos (Gipsy) sigue pasando de 25 min, con el mismo patrón (`bake_mesh` y objetos en la escena por pieza). Y lo demás del informe: herramientas que rompen, ruido y huecos.
+
 ### Siguiente paso (para retomar, 2026-11-03)
 
 1. ~~`/ponytail-review` y `/code-review` del bake helper y de `--jobs`.~~ Hecho el 2026-11-03 (ver arriba). Lo arreglado en esa revisión y el solape de UVs se revisaron el 2026-11-04 sin hallazgos nuevos (el reparto de `--jobs` con más jobs que ficheros, `check_bake_pairs` frente a `highs_of` con `low_suffix` vacío, la recursión de `_halves`), y se commitearon.

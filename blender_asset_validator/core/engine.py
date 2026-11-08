@@ -1,5 +1,6 @@
 import json
 import re
+import time
 import zlib
 from pathlib import Path
 from typing import Any
@@ -108,6 +109,24 @@ def run_validation(
     checks: set[str] | None = None,
 ) -> list[CheckResult]:
     """`checks`: names of the check functions to run (a guided step's), None for all."""
+    steps = validation_steps(config, objects, checks)
+    try:
+        while True:
+            next(steps)
+    except StopIteration as end:
+        return end.value
+
+
+_STATUS_EVERY = 0.1  # seconds between the status lines validation_steps yields
+
+
+def validation_steps(
+    config: dict[str, Any],
+    objects: list[bpy.types.Object] | None = None,
+    checks: set[str] | None = None,
+):
+    """run_validation as a generator, for a modal Validate: yields a status line every _STATUS_EVERY
+    seconds, between one object's check and the next, and returns the results."""
     if objects is None:
         objects = get_validation_objects(config)
 
@@ -117,22 +136,34 @@ def run_validation(
     objects = [obj for obj in objects if obj.name not in invalid]
     roles = {obj: role(obj, config) for obj in objects}
 
-    for check in get_checks():
-        if checks is not None and check.__name__ not in checks:
-            continue
+    selected = [c for c in get_checks() if checks is None or c.__name__ in checks]
+    last = time.perf_counter()
+    for number, check in enumerate(selected, 1):
         targets = [obj for obj in objects if roles[obj] in check.roles]
-        if not targets:
-            continue
-        try:
-            results.extend(check(targets, config))
-        except Exception as e:
-            results.append(CheckResult(
-                severity=Severity.ERROR,
-                message=f"Check '{check.__name__}' raised an exception: {e}",
-                check_name=check.__name__,
-            ))
+        for batch in [targets] if check.whole_set else ([obj] for obj in targets):
+            if not batch:
+                continue
+            if time.perf_counter() - last > _STATUS_EVERY:
+                yield f"check {number}/{len(selected)}, {check.__name__.removeprefix('check_')}: '{batch[0].name}'"
+                last = time.perf_counter()
+            try:
+                results.extend(check(batch, config))
+            except Exception as e:
+                results.append(CheckResult(
+                    severity=Severity.ERROR,
+                    message=f"Check '{check.__name__}' raised an exception"
+                            + (f" on '{batch[0].name}'" if len(batch) == 1 else "") + f": {e}",
+                    check_name=check.__name__,
+                ))
 
     apply_waivers(results)
+    return results
+
+
+def store_results(results: list[CheckResult]) -> list[CheckResult]:
+    """Persist the results for the panel, and print the report."""
+    set_results(results)
+    generate_report(results)
     return results
 
 
@@ -142,10 +173,7 @@ def validate_and_store(
     checks: set[str] | None = None,
 ) -> list[CheckResult]:
     """Run the checks, persist the results for the panel, and print the report."""
-    results = run_validation(config, objects, checks)
-    set_results(results)
-    generate_report(results)
-    return results
+    return store_results(run_validation(config, objects, checks))
 
 
 def _merge_dicts(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

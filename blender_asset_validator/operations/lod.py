@@ -6,7 +6,7 @@ import numpy as np
 from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 
-from ..core.mesh_utils import bake_mesh, read_array, to_world
+from ..core.mesh_utils import bake_mesh, read_array, scene_depsgraph, to_world
 from ..core.roles import LOD_LEVEL as _LEVEL, LOD_MARKER as _MARKER, LOD_SLOT, LOD_SOURCE as _SOURCE, is_lod
 from ..core.steps import APPROVED
 from .cleanup import delete_loose, fix_normals
@@ -37,6 +37,17 @@ def generate_lods(objects: List[bpy.types.Object], config: dict) -> List[str]:
     `lod.clean_topology` -> normals transferred from the source.
     Returns one log line per created copy.
     """
+    # The decimation's scratch objects live in a scene of their own: in the artist's, every evaluation
+    # re-read all its objects, so LODs of a 940-part robot went past 25 minutes (parts squared)
+    work = bpy.data.scenes.new("_AssetValidator_LOD")
+    work.frame_current = bpy.context.scene.frame_current  # the normals source evaluates there: the artist's pose
+    try:
+        return _generate_lods(objects, config, work)
+    finally:
+        bpy.data.scenes.remove(work)
+
+
+def _generate_lods(objects: List[bpy.types.Object], config: dict, work: bpy.types.Scene) -> List[str]:
     created = []
     cfg = config.get("lod", {})
     levels = cfg.get("levels", [])
@@ -48,59 +59,80 @@ def generate_lods(objects: List[bpy.types.Object], config: dict) -> List[str]:
     clean = settings if cfg.get("clean_topology", False) else None
     max_deviation = cfg.get("max_deviation", 1.0)
 
-    for obj in objects:
-        if is_lod(obj):
-            continue  # don't generate LODs of LODs
-
+    sources = [obj for obj in objects if not is_lod(obj)]  # don't generate LODs of LODs
+    # Old LODs go first and new ones join the scene last: each change to the scene's objects made the next
+    # source's evaluation rebuild the whole scene graph, parts squared on a many-part asset.
+    # shortcut: an error on one source leaves the later ones without LODs (they regenerate); keep the old ones if it bites
+    for obj in sources:
         for old_lod in lods_of(obj):
             old_mesh = old_lod.data
             bpy.data.objects.remove(old_lod)  # frees the names so the new copies get them exactly
             if old_mesh is not None and old_mesh.users == 0:
                 bpy.data.meshes.remove(old_mesh)
+    depsgraph = bpy.context.evaluated_depsgraph_get()  # once: see bake_mesh
+    # shortcut: every source's evaluated mesh at once, in memory together; bake them in batches if that bites
+    bases = [(obj, bake_mesh(obj, depsgraph)) for obj in sources]  # modifiers applied: as check_polycount and the export
+    made, done = [], 0
+    try:
+        for obj, base in bases:
+            created.extend(_lods_of_one(obj, base, levels, settings, clean, max_deviation, work, made))
+            done += 1
+    finally:
+        for _, base in bases[done:]:  # after an error: the bases not used up, or they stay as orphan meshes
+            bpy.data.meshes.remove(base)
+        for obj, level_idx, lod_obj in made:  # linked even after an error, as each one was before
+            obj[LOD_SLOT.format(level_idx)] = lod_obj  # an ID pointer: setting it rebuilds the scene graph too
+            collection.objects.link(lod_obj)
+    return created
 
-        base = mesh = bake_mesh(obj)  # modifiers applied — matches check_polycount and the export
-        source_tris = _tri_count(base)
-        smooth = any(p.use_smooth for p in base.polygons)
-        surface = Surface(base) if clean else None
-        base_shape = _shape(base, obj.matrix_world)
 
-        for level_idx, level in enumerate(levels, start=1):
-            suffix = level.get("suffix", f"_LOD{level_idx}")
-            target = max(4, round(source_tris * level.get("ratio", 0.5)))
-            mesh = _reduce(mesh, target, obj if smooth else None, surface, clean, settings["flat"])
+def _lods_of_one(obj, base, levels, settings, clean, max_deviation, work, made) -> List[str]:
+    """obj's LOD objects from `base` (its evaluated mesh, removed here), appended to `made` as (obj, level, LOD)
+    for the caller to link; one log line each."""
+    created = []
+    mesh = base
+    source_tris = _tri_count(base)
+    smooth = any(p.use_smooth for p in base.polygons)
+    surface = Surface(base) if clean else None
+    base_shape = _shape(base, obj.matrix_world)
 
-            # ponytail: modifiers are baked in, so rigged meshes get a static LOD;
-            # rebuild from obj.data and re-add the Armature modifier if skinned assets need LODs
-            lod_obj = obj.copy()  # keeps transform, parent and custom props
-            lod_obj.modifiers.clear()
-            lod_obj.data = mesh
-            lod_obj.name = mesh.name = f"{obj.name}{suffix}"
-            lod_obj[_MARKER] = True
-            lod_obj[_SOURCE] = obj  # ID pointer, survives renaming the source
-            lod_obj[_LEVEL] = level_idx
-            for key in [k for k in lod_obj.keys() if k == APPROVED or k.startswith(LOD_SLOT.format(""))]:
-                del lod_obj[key]  # copied from the source: its step approvals and its pointers to its LODs
-            obj[LOD_SLOT.format(level_idx)] = lod_obj
-            group = lod_obj.vertex_groups.get(_PROTECT_GROUP)
-            if group is not None:
-                lod_obj.vertex_groups.remove(group)
-            collection.objects.link(lod_obj)  # obj.copy() isn't in any collection yet
+    for level_idx, level in enumerate(levels, start=1):
+        suffix = level.get("suffix", f"_LOD{level_idx}")
+        target = max(4, round(source_tris * level.get("ratio", 0.5)))
+        mesh = _reduce(mesh, target, obj if smooth else None, surface, clean, settings["flat"], work)
 
-            line = f"Generated '{lod_obj.name}' from '{obj.name}' ({source_tris:,} -> {_tri_count(mesh):,} tris, target {target:,})"
-            stray = _stray(base_shape, _shape(mesh, obj.matrix_world)) if base_shape else 0.0
-            if stray > max_deviation:
-                lod_obj[STRAY] = round(stray, 2)
-                line += f": strays {stray:.1f} % of its size from the source (limit {max_deviation:g} %), give it a higher ratio"
-            created.append(line)
-        bpy.data.meshes.remove(base)
+        # ponytail: modifiers are baked in, so rigged meshes get a static LOD;
+        # rebuild from obj.data and re-add the Armature modifier if skinned assets need LODs
+        lod_obj = obj.copy()  # keeps transform, parent and custom props
+        lod_obj.modifiers.clear()
+        lod_obj.data = mesh
+        lod_obj.name = mesh.name = f"{obj.name}{suffix}"
+        lod_obj[_MARKER] = True
+        lod_obj[_SOURCE] = obj  # ID pointer, survives renaming the source
+        lod_obj[_LEVEL] = level_idx
+        for key in [k for k in lod_obj.keys() if k == APPROVED or k.startswith(LOD_SLOT.format(""))]:
+            del lod_obj[key]  # copied from the source: its step approvals and its pointers to its LODs
+        group = lod_obj.vertex_groups.get(_PROTECT_GROUP)
+        if group is not None:
+            lod_obj.vertex_groups.remove(group)
+        made.append((obj, level_idx, lod_obj))  # obj.copy() isn't in any collection yet
+
+        line = f"Generated '{lod_obj.name}' from '{obj.name}' ({source_tris:,} -> {_tri_count(mesh):,} tris, target {target:,})"
+        stray = _stray(base_shape, _shape(mesh, obj.matrix_world)) if base_shape else 0.0
+        if stray > max_deviation:
+            lod_obj[STRAY] = round(stray, 2)
+            line += f": strays {stray:.1f} % of its size from the source (limit {max_deviation:g} %), give it a higher ratio"
+        created.append(line)
+    bpy.data.meshes.remove(base)
 
     return created
 
 
-def _reduce(mesh: bpy.types.Mesh, target_tris: int, normals_source, surface, clean, flat_angle: float) -> bpy.types.Mesh:
+def _reduce(mesh: bpy.types.Mesh, target_tris: int, normals_source, surface, clean, flat_angle: float,
+            work: bpy.types.Scene) -> bpy.types.Mesh:
     """New mesh: `mesh` reduced to ~target_tris without breaking its borders, seams or UV/material borders."""
     tmp = bpy.data.objects.new("_AssetValidator_LOD_tmp", mesh.copy())
-    bpy.context.scene.collection.objects.link(tmp)
+    work.collection.objects.link(tmp)
     try:
         # Hard edges (sharp, or split custom normals) stay out of the decimation: kept as borders and
         # protected, they folded a LOD's mesh into edges with 3+ faces (20 on a pistol magazine). On a
@@ -108,14 +140,20 @@ def _reduce(mesh: bpy.types.Mesh, target_tris: int, normals_source, surface, cle
         sharp = tmp.data.attributes.get("sharp_edge")
         if sharp is not None:
             tmp.data.attributes.remove(sharp)
-        with bpy.context.temp_override(object=tmp):  # an operator: only recent Blender keeps them as an attribute
-            bpy.ops.mesh.customdata_custom_splitnormals_clear()
+        custom = tmp.data.attributes.get("custom_normal")  # recent Blender: an attribute
+        if custom is not None:
+            tmp.data.attributes.remove(custom)
+        elif tmp.data.has_custom_normals:
+            # shortcut: 4.2 keeps them out of the attributes, and an operator call costs per object in the
+            # file (83 ms with 3,000): many-part LODs stay quadratic there; drop it when 4.2 support goes
+            with bpy.context.temp_override(object=tmp):
+                bpy.ops.mesh.customdata_custom_splitnormals_clear()
         _write_protect_group(tmp)
         planar = tmp.modifiers.new("planar", "DECIMATE")
         planar.decimate_type = "DISSOLVE"
         planar.angle_limit = flat_angle  # only truly flat regions — never changes the silhouette
         planar.delimit = {"NORMAL", "MATERIAL", "SEAM", "UV"}
-        _bake_into(tmp)
+        _bake_into(tmp, work)
 
         tris = _tri_count(tmp.data)
         if tris > target_tris:
@@ -129,7 +167,7 @@ def _reduce(mesh: bpy.types.Mesh, target_tris: int, normals_source, surface, cle
             tri = tmp.modifiers.new("triangulate", "TRIANGULATE")
             tri.quad_method = "BEAUTY"
             tri.ngon_method = "BEAUTY"
-        _bake_into(tmp)
+        _bake_into(tmp, work)
 
         if clean is not None:
             bm = bmesh.new()
@@ -143,7 +181,7 @@ def _reduce(mesh: bpy.types.Mesh, target_tris: int, normals_source, surface, cle
         tmp.data.validate(clean_customdata=False)  # and faces stacked on the same vertices (1,182 on a papercraft robot)
         fix_normals(tmp, {})
         if normals_source is not None:
-            transfer_normals(tmp.data, normals_source)
+            transfer_normals(tmp.data, normals_source, work)
         return tmp.data
     finally:
         bpy.data.objects.remove(tmp)
@@ -192,9 +230,9 @@ def _write_protect_group(obj: bpy.types.Object) -> None:
     group.add(list(protected), _PROTECTED_WEIGHT, "REPLACE")
 
 
-def _bake_into(obj: bpy.types.Object) -> None:
+def _bake_into(obj: bpy.types.Object, scene: bpy.types.Scene) -> None:
     old = obj.data
-    obj.data = bake_mesh(obj)
+    obj.data = bake_mesh(obj, scene_depsgraph(scene))
     obj.modifiers.clear()
     bpy.data.meshes.remove(old)
 

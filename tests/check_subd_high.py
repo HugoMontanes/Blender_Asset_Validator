@@ -224,6 +224,16 @@ try:
     msg = bake.make_high(tri, cfg, 0.9, 2)
     check("AC-7: a triangulated low: the line counts the faces that aren't quads", "12 face(s) aren't quads" in msg, msg)
 
+    # Blender's Subdivision freezes on a big ngon (measured: 200 sides 1.9 s, 400 sides 24 s; a CAD import's
+    # 1,000-sided face never finished): the low is skipped with a line saying why
+    import math, time
+    ring = [(math.cos(a), math.sin(a), 0) for a in np.linspace(0, 2 * math.pi, 300, endpoint=False)]
+    me = bpy.data.meshes.new("Ngon"); me.from_pydata(ring, [], [list(range(300))])
+    ngon = bpy.data.objects.new("Ngon", me); scene.collection.objects.link(ngon)
+    t = time.perf_counter(); msg = bake.make_high(ngon, cfg, 0.9, 2); elapsed = time.perf_counter() - t
+    check("a low with a 300-sided face: no high, the line says why, at once",
+          "Ngon_high" not in bpy.data.objects and "more than 64 sides" in msg and elapsed < 1.0, f"{elapsed:.1f}s {msg}")
+
     from blender_asset_validator.ui import panel
     check("AC-8: the button is among the tools of Shading & UVs",
           "asset_validator.make_high" in [op for row in panel._STEP_TOOLS[3] for op, _ in row])

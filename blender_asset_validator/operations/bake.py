@@ -17,6 +17,7 @@ _SAMPLES = 16  # anti-aliasing of the bake; the render's samples (4096 by defaul
 # ponytail: a random sample past this many high vertices; a spike of a few vertices can miss it and the
 # cage comes out short (the 10 % pad covers a dense bump). Measure them all if a real high shows it.
 _MAX_PROBES = 100_000
+_MAX_SUBD_SIDES = 64  # Make SubD High: a 50-sided face subdivides in 0.02 s, a 200-sided one in 1.9 s
 _MAX_OFFSET = 0.1  # median high-to-low distance, of the low's diagonal, past which the pair isn't on top of each other
 
 
@@ -146,6 +147,12 @@ def make_high(low: bpy.types.Object, config: dict, crease: float, levels: int) -
         return f"'{name}' already exists, left as it is (delete it to make a new one)"
     if len(name.encode()) > 63:  # Blender would cut the suffix off, and the copy would be an asset
         return f"not made, '{name}' is past Blender's 63-byte names: shorten '{low.name}'"
+    # Blender's Subdivision freezes on big ngons (200 sides 1.9 s, 400 sides 24 s, 1,000 never finished)
+    # shortcut: reads the low's own faces, not ones its modifiers make (a Boolean); check the evaluated mesh if those bite
+    big = int((read_array(low.data.polygons, "loop_total", dtype=np.int64) > _MAX_SUBD_SIDES).sum())
+    if big:
+        return (f"not made, {big} face(s) have more than {_MAX_SUBD_SIDES} sides and Subdivision freezes on them: "
+                "split them first (Edit Mode > Face > Triangulate Faces, or Poke)")
     high = low.copy()
     high.data = low.data.copy()
     high.name = high.data.name = name

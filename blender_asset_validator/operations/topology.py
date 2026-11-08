@@ -15,7 +15,7 @@ from mathutils import Vector
 from mathutils.bvhtree import BVHTree
 from mathutils.geometry import barycentric_transform
 
-from ..core.mesh_utils import bake_mesh, read_array
+from ..core.mesh_utils import bake_mesh, read_array, scene_depsgraph
 from ..core.roles import lod_source
 from .uvs import face_islands
 
@@ -661,7 +661,7 @@ class Surface:
                     loop[layer].uv = self.uv_at(loop.vert.co, hit[2], layer_idx)
 
 
-def transfer_normals(mesh: bpy.types.Mesh, source: bpy.types.Object) -> None:
+def transfer_normals(mesh: bpy.types.Mesh, source: bpy.types.Object, scene: bpy.types.Scene = None) -> None:
     """Custom normals of `source` (evaluated, same local space) written into `mesh` in place, so linked
     duplicates keep sharing it. Read on a copy with each face split off and shrunk 1%: a corner on a hard edge
     touches both faces and the transfer took either (a cube came out 90° off); NEAREST_POLYNOR steps LODs."""
@@ -678,7 +678,7 @@ def transfer_normals(mesh: bpy.types.Mesh, source: bpy.types.Object) -> None:
     probe.polygons.foreach_set("loop_start", starts.astype(np.int32))
     probe.update(calc_edges=True)
     holder = bpy.data.objects.new("_AssetValidator_normals", probe)
-    bpy.context.scene.collection.objects.link(holder)
+    (scene or bpy.context.scene).collection.objects.link(holder)
     try:
         transfer = holder.modifiers.new("normals", "DATA_TRANSFER")
         transfer.object = source
@@ -686,7 +686,7 @@ def transfer_normals(mesh: bpy.types.Mesh, source: bpy.types.Object) -> None:
         transfer.use_loop_data = True
         transfer.data_types_loops = {"CUSTOM_NORMAL"}
         transfer.loop_mapping = "POLYINTERP_NEAREST"
-        baked = bake_mesh(holder)
+        baked = bake_mesh(holder, scene_depsgraph(scene) if scene else None)
     finally:
         bpy.data.objects.remove(holder)
         bpy.data.meshes.remove(probe)

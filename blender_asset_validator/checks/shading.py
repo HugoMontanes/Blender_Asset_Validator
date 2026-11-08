@@ -4,7 +4,7 @@ from typing import List
 import bpy
 import numpy as np
 
-from ..core.mesh_utils import bake_mesh, read_array, select_in_edit_mode
+from ..core.mesh_utils import read_array, select_in_edit_mode
 from ..core.registry import register_check
 from ..core.result import CheckResult, Severity
 from ..operations.hard_surface import add_weighted_normal, has_weighted_normal
@@ -23,13 +23,17 @@ def check_shading(objects: List[bpy.types.Object], config: dict) -> List[CheckRe
         return results
 
     for obj in objects:
-        mesh = bake_mesh(obj)  # modifiers applied: Smooth by Angle decides the hard edges
+        # Modifiers applied (Smooth by Angle decides the hard edges), as a temporary mesh: a new datablock
+        # made the next evaluation rebuild the scene graph, objects squared (31 s on a 940-part robot)
+        depsgraph = bpy.context.evaluated_depsgraph_get()
+        evaluated = obj.evaluated_get(depsgraph)
+        mesh = evaluated.to_mesh(preserve_all_data_layers=True, depsgraph=depsgraph)
         try:
             stats = shading_stats(mesh)
             hard = stats["hard_off_seam"]
             selectable = _original_edges(mesh, obj.data, hard) if hard else None
         finally:
-            bpy.data.meshes.remove(mesh)
+            evaluated.to_mesh_clear()
 
         if hard:
             results.append(CheckResult(

@@ -29,12 +29,23 @@ def to_world(co: np.ndarray, matrix) -> np.ndarray:
     return co @ m[:3, :3].T + m[:3, 3]
 
 
-def bake_mesh(obj: bpy.types.Object) -> bpy.types.Mesh:
-    """New mesh datablock of `obj` with modifiers applied, without bpy.ops (works headless and in any mode)."""
-    depsgraph = bpy.context.evaluated_depsgraph_get()
+def bake_mesh(obj: bpy.types.Object, depsgraph=None) -> bpy.types.Mesh:
+    """New mesh datablock of `obj` with modifiers applied, without bpy.ops (works headless and in any mode).
+    `depsgraph`: one already evaluated (scene_depsgraph, or one shared by many bakes) instead of the context's.
+    Every new or removed ID makes the next evaluated_depsgraph_get() rebuild the whole scene graph, so a loop
+    baking each object of a many-part asset with its own call is parts squared."""
+    if depsgraph is None:
+        depsgraph = bpy.context.evaluated_depsgraph_get()
     return bpy.data.meshes.new_from_object(
         obj.evaluated_get(depsgraph), preserve_all_data_layers=True, depsgraph=depsgraph
     )
+
+
+def scene_depsgraph(scene: bpy.types.Scene):
+    """`scene`'s evaluated depsgraph (a scratch scene holding just what's baked): it only exists once asked
+    for through the context."""
+    with bpy.context.temp_override(scene=scene, view_layer=scene.view_layers[0]):
+        return bpy.context.evaluated_depsgraph_get()
 
 
 def repair_invalid(objects, operator=None) -> list:

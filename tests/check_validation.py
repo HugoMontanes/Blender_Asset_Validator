@@ -338,6 +338,28 @@ check("every mesh tool repairs invalid mesh data before reading the selection",
 for module in spied:
     module.repair_invalid = real_repair
 
+# ---------- 10b. Validate in steps (modal: status bar, Esc) ----------
+# The whole stress scene sat 25 min in Validate with no sign of life and no way out
+saved, engine._STATUS_EVERY = engine._STATUS_EVERY, 0.0  # a status line between every two objects
+objs = [make_mesh(f"Stepped{i}", fill) for i, fill in enumerate((cube, ngon, overlap_uv_fill, cube))]
+steps = engine.validation_steps(engine.load_config(), objs)
+lines = []
+try:
+    while True:
+        lines.append(next(steps))
+except StopIteration as end:
+    stepped = end.value
+engine._STATUS_EVERY = saved
+plain = engine.run_validation(engine.load_config(), objs)
+check("validation in steps: a status line between objects, the same results as in one go",
+      len(lines) > len(objs) and [r.message for r in stepped] == [r.message for r in plain], f"{len(lines)} lines: {lines[:2]}")
+parent, child = make_mesh("LinkParent", cube), make_mesh("LinkChild", cube)
+child.parent = parent
+cfg = engine.load_config(); cfg["export"]["individual_files"] = False
+drops = lambda objs: [r.object_name for r in engine.run_validation(cfg, objs) if "drops that link" in r.message]
+check("checks that compare objects still see the whole set: a child exported with its parent keeps the link",
+      drops([child]) == ["LinkChild"] and drops([parent, child]) == [], f"{drops([child])} {drops([parent, child])}")
+
 # ---------- 11. unregister clean ----------
 try:
     bav.unregister(); say("PASS  unregister clean")

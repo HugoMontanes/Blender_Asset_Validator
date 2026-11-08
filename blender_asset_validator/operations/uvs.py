@@ -13,6 +13,7 @@ from ..core.mesh_utils import read_array
 _SNAP = 1e-5  # UVs closer than this are one UV vertex (Blender's own island limit is 1e-4)
 _UV_SHRINK = 1e-4
 _CROWDED = 64  # UV overlap test: triangles in one grid cell past which the grid is halved (an even layout has under 32)
+_MAX_TRI_CELLS = 64  # UV overlap test: a triangle covering more grid cells is tested on its own, against its box
 _CROWDED_ROUNDS = 8  # rounds of pairs a crowded grid tests first: tiling UVs overlap close at hand
 _CUT_ROUNDS = 4
 _MAX_GROWN = 5_000_000  # border pixels x gap disk the island gap check sorts at once: ~1 s, ~150 MB
@@ -213,11 +214,14 @@ def _any_triangles_overlap(tris: np.ndarray) -> bool:
     bounds; only triangles sharing a cell are tested against each other."""
     if len(tris) < 2:
         return False
-    cells = max(1, int(len(tris) ** 0.5))
     lo, hi = tris.min(axis=1), tris.max(axis=1)
+    # No finer than the typical triangle: stacked UVs (foliage cards, mirrored halves) span the whole layout,
+    # and sqrt(T) cells a side put each in every cell, T^2 entries (20k grass cards never finished)
+    typical = np.median((hi - lo).max(axis=1)) / max((hi.max(axis=0) - lo.min(axis=0)).max(), 1e-12)
+    cells = max(1, min(int(len(tris) ** 0.5), int(1 / max(typical, 1e-12))))
     origin = lo.min(axis=0)
-    size = (hi.max(axis=0) - origin) / cells
-    size[size == 0] = 1.0
+    # Square cells: on a thin strip (a trim sheet) cells sized per axis put every triangle in all the rows
+    size = (hi.max(axis=0) - origin).max() / cells or 1.0
 
     def cell_of(points):
         return np.minimum(((points - origin) / size).astype(np.int64), cells - 1)
@@ -225,6 +229,9 @@ def _any_triangles_overlap(tris: np.ndarray) -> bool:
     first = cell_of(lo)
     span = cell_of(hi) - first + 1
     count = span[:, 0] * span[:, 1]  # cells each triangle covers
+    big = count > _MAX_TRI_CELLS  # a few big triangles among small ones: a tree's lightmap asked for 3.1e9 cells
+    if big.any():
+        return _big_overlap(tris, lo, hi, np.flatnonzero(big)) or _any_triangles_overlap(tris[~big])
     nth = np.arange(count.sum()) - np.repeat(np.cumsum(count) - count, count)
     width = np.repeat(span[:, 0], count)
     cell = (np.repeat(first[:, 0], count) + nth % width) * cells + np.repeat(first[:, 1], count) + nth // width
@@ -256,6 +263,23 @@ def _any_triangles_overlap(tris: np.ndarray) -> bool:
         apart |= _separated(axes[b], own_min[b], own_max[b], tris[a])
         if not apart.all():
             return True
+    return False
+
+
+def _big_overlap(tris: np.ndarray, lo: np.ndarray, hi: np.ndarray, big: np.ndarray) -> bool:
+    """Each of the `big` triangles against every triangle its box touches, a batch of rows at a time."""
+    axes, own_min, own_max = _sat_axes(tris)
+    step = max(1, 2_000_000 // len(tris))  # rows x triangles booleans per batch: memory stays flat on a 5M scan
+    for start in range(0, len(big), step):
+        rows = big[start:start + step]
+        a, b = np.nonzero((lo[None] <= hi[rows, None]).all(axis=2) & (hi[None] >= lo[rows, None]).all(axis=2))
+        a = rows[a]
+        a, b = a[a != b], b[a != b]
+        for s in range(0, len(a), 1_000_000):  # pairs a slice at a time: memory stays flat
+            x, y = a[s:s + 1_000_000], b[s:s + 1_000_000]
+            apart = _separated(axes[x], own_min[x], own_max[x], tris[y]) | _separated(axes[y], own_min[y], own_max[y], tris[x])
+            if not apart.all():
+                return True
     return False
 
 

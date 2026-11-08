@@ -150,6 +150,23 @@ try:
     check("a copy of a LOD survives regenerating them, as an asset of its own",
           kept.name in bpy.data.objects and role(kept, CFG) == "asset" and lod_source(kept) is None
           and kept not in lod_ops.lods_of(dups) and [role(l, CFG) for l in lod_ops.lods_of(dups)] == ["lod"] * 3, kept.name)
+
+    # Every evaluation in the artist's scene re-read all its objects: LODs of a 940-part robot took past 25 min.
+    # 4x the parts: about 5x the time now (removing an ID scans the file), it was 16-24x
+    import time
+    def parts(n, tag):
+        made = []
+        for i in range(n):
+            bm = bmesh.new(); bmesh.ops.create_icosphere(bm, subdivisions=3, radius=0.3)
+            made.append(obj_from_bm(f"Part{tag}{i}", bm))
+        return made
+    timings = []
+    for n in (50, 200):
+        group = parts(n, n)
+        t = time.perf_counter(); lod_ops.generate_lods(group, CFG); timings.append(time.perf_counter() - t)
+    check("LODs of many parts scale with the parts, not their square", timings[1] < 8 * timings[0],
+          f"50 parts {timings[0]:.1f}s, 200 parts {timings[1]:.1f}s ({timings[1] / timings[0]:.1f}x)")
+    check("LODs leave no scratch scene behind", len(bpy.data.scenes) == 1, [s.name for s in bpy.data.scenes])
     bav.unregister()
     say("DONE")
 except Exception:
