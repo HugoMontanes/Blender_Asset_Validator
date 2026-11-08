@@ -1,0 +1,6 @@
+*.blend
+*.blend1
+StressTest_manifest.json
+asset_validator.json
+textures/
+_out/
